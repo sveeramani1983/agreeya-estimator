@@ -7,12 +7,13 @@ import { Separator } from "@/components/ui/separator"
 import { NewProjectModal } from "@/components/new-project-modal"
 import { SignInButton, Show, UserButton } from "@clerk/nextjs"
 import { useSaveStatus } from "@/components/save-status-context"
+import { ThemeToggle } from "@/components/theme-toggle"
 
 export function AppHeader() {
   const { saving, saved } = useSaveStatus()
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between border-b bg-[#0D1526] border-[#1E2D45] px-6">
+    <header className="flex h-16 shrink-0 items-center justify-between border-b bg-[var(--sidebar)] border-[var(--sidebar-border)] px-6">
       <div className="flex items-center gap-4">
         <SidebarTrigger className="-ml-1" />
         <Separator orientation="vertical" className="mr-2 h-4" />
@@ -38,6 +39,7 @@ export function AppHeader() {
             Saved
           </span>
         )}
+        <ThemeToggle />
         <Show when="signed-out">
           <SignInButton mode="modal">
             <Button variant="outline" size="sm">Sign In</Button>
