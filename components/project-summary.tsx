@@ -3,7 +3,7 @@
 import { useState, useCallback, useMemo } from "react"
 import { Printer, Download, Copy, Save, CheckCircle2 } from "lucide-react"
 import debounce from "lodash.debounce"
-import { format } from "date-fns"
+import { format, parseISO, differenceInDays } from "date-fns"
 import * as XLSX from "xlsx"
 
 import { Button } from "@/components/ui/button"
@@ -12,12 +12,13 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { toast } from "sonner"
 
-import { Project, WBSComponent, OverheadConfig, AdditionalCost, CommercialsConfig, ResourceLoading, Assumption } from "@/lib/types"
+import { Project, WBSComponent, OverheadConfig, AdditionalCost, CommercialsConfig, ResourceLoading, Assumption, Phase, PeriodCost, WBSComponentWithActual } from "@/lib/types"
 import { updateProject } from "@/lib/actions"
+import { ProjectHealth } from "@/components/project-health"
 
 interface ProjectSummaryProps {
   project: Project
-  wbsComponents: WBSComponent[]
+  wbsComponents: WBSComponentWithActual[]
   overheadConfig: OverheadConfig
   laborCosts: any[]
   additionalCosts: AdditionalCost[]
@@ -25,6 +26,36 @@ interface ProjectSummaryProps {
   totals: any
   assumptions?: Assumption[]
   risks?: Assumption[]
+  phases?: Phase[]
+  burnRateData?: PeriodCost[]
+}
+
+function SummaryMiniGantt({ phases }: { phases: Phase[] }) {
+  if (phases.length === 0) return null
+  const starts = phases.map(p => parseISO(p.start_date))
+  const ends   = phases.map(p => parseISO(p.end_date))
+  const projectStart = starts.reduce((a, b) => (a < b ? a : b))
+  const projectEnd   = ends.reduce((a, b) => (a > b ? a : b))
+  const totalDays = differenceInDays(projectEnd, projectStart) + 1
+  const SVG_W = 560
+  const dayW = SVG_W / Math.max(totalDays, 1)
+  const ROW_H = 18, GAP = 3, HEADER_H = 0
+  const svgH = phases.length * (ROW_H + GAP)
+  return (
+    <div className="mt-3 overflow-hidden rounded" style={{ border: "1px solid var(--border-primary)" }}>
+      <svg width="100%" viewBox={`0 0 ${SVG_W} ${svgH}`} preserveAspectRatio="none" style={{ display: "block" }}>
+        {phases.map((phase, i) => {
+          const x = differenceInDays(parseISO(phase.start_date), projectStart) * dayW
+          const w = Math.max((differenceInDays(parseISO(phase.end_date), parseISO(phase.start_date)) + 1) * dayW, 2)
+          const y = i * (ROW_H + GAP)
+          return (
+            <rect key={phase.id} x={x} y={y} width={w} height={ROW_H} rx={3}
+              fill={phase.color} fillOpacity={0.8} />
+          )
+        })}
+      </svg>
+    </div>
+  )
 }
 
 export function ProjectSummary({
@@ -36,7 +67,9 @@ export function ProjectSummary({
   commercialsConfig,
   totals,
   assumptions = [],
-  risks = []
+  risks = [],
+  phases = [],
+  burnRateData = [],
 }: ProjectSummaryProps) {
   const [executiveSummary, setExecutiveSummary] = useState(project.executive_summary || "")
   const [saving, setSaving] = useState(false)
@@ -140,6 +173,32 @@ export function ProjectSummary({
     const wsRisks = XLSX.utils.json_to_sheet(risksData.length > 0 ? risksData : [{ "#": "", Title: "No risks recorded", Category: "", Likelihood: "", Impact: "", Score: "", Mitigation: "", Owner: "", Status: "" }])
     XLSX.utils.book_append_sheet(wb, wsRisks, "Risk Register")
 
+    // 7. Burn Rate
+    if (burnRateData.length > 0) {
+      const burnData = burnRateData.map(p => ({
+        Period: p.label,
+        "Period Cost": p.margined_cost,
+        "Cumulative Spend": p.cumulative,
+      }))
+      const wsBurn = XLSX.utils.json_to_sheet(burnData)
+      XLSX.utils.book_append_sheet(wb, wsBurn, "Burn Rate")
+    }
+
+    // 8. Accuracy (when project is won and actuals exist)
+    if (project.status === 'won' && wbsComponents.some(c => c.actual_hours != null)) {
+      const accuracyData = wbsComponents
+        .filter(c => c.actual_hours != null)
+        .map(c => ({
+          Category: c.category,
+          Component: c.component_name,
+          "Estimated Hours": c.base_hours,
+          "Actual Hours": c.actual_hours,
+          "Accuracy %": c.accuracy_pct != null ? `${c.accuracy_pct}%` : "",
+        }))
+      const wsAccuracy = XLSX.utils.json_to_sheet(accuracyData)
+      XLSX.utils.book_append_sheet(wb, wsAccuracy, "Accuracy")
+    }
+
     const safeName = project.name.replace(/[/\\:*?"<>|\s]+/g, '_').slice(0, 100)
     XLSX.writeFile(wb, `${safeName}_Estimate.xlsx`)
   }
@@ -215,8 +274,9 @@ export function ProjectSummary({
       if (!acc[curr.category]) acc[curr.category] = []
       acc[curr.category].push(curr)
       return acc
-    }, {} as Record<string, WBSComponent[]>)
+    }, {} as Record<string, WBSComponentWithActual[]>)
   }, [wbsComponents])
+
 
   return (
     <div className="relative pb-24">
@@ -456,6 +516,40 @@ export function ProjectSummary({
           </section>
         )}
 
+        {/* Project Schedule */}
+        <section className="space-y-3 break-inside-avoid">
+          <h2 className="text-xl font-bold text-foreground print:text-slate-800 border-b pb-2">Project Schedule</h2>
+          {phases.length === 0 ? (
+            <p className="text-sm text-muted-foreground print:hidden">
+              No phases defined.{" "}
+              <a href={`/projects/${project.id}/schedule`} className="text-primary underline">
+                Add phases in the Schedule tab →
+              </a>
+            </p>
+          ) : (
+            <div>
+              <div className="space-y-1.5">
+                {phases.map(phase => {
+                  const start = parseISO(phase.start_date)
+                  const end   = parseISO(phase.end_date)
+                  const weeks = Math.round((differenceInDays(end, start) + 1) / 7)
+                  return (
+                    <div key={phase.id} className="flex items-center gap-3 text-sm">
+                      <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: phase.color }} />
+                      <span className="font-medium w-56 truncate">{phase.name}</span>
+                      <span className="text-muted-foreground text-xs">
+                        {format(start, "MMM d")} – {format(end, "MMM d, yyyy")}
+                      </span>
+                      <span className="text-muted-foreground text-xs ml-auto">{weeks}w</span>
+                    </div>
+                  )
+                })}
+              </div>
+              <SummaryMiniGantt phases={phases} />
+            </div>
+          )}
+        </section>
+
         {/* Narrative */}
         {commercialsConfig.quote_narrative && (
           <section className="space-y-4 break-inside-avoid">
@@ -468,17 +562,25 @@ export function ProjectSummary({
 
       </div>
 
+      {/* Project Health — separate section below summary card */}
+      <ProjectHealth
+        project={project}
+        wbsComponents={wbsComponents}
+        burnRateData={burnRateData}
+        quotedPrice={totals.quotedPrice}
+      />
+
       {/* Floating Action Bar */}
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0D1526] border border-[#1E2D45] text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 print:hidden z-50">
-        <Button variant="ghost" onClick={handlePrint} className="text-white hover:text-foreground hover:bg-[#1E2D45] gap-2">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[var(--sidebar)] border border-[var(--sidebar-border)] text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 print:hidden z-50">
+        <Button variant="ghost" onClick={handlePrint} className="text-white hover:text-white hover:bg-white/10 gap-2">
           <Printer className="h-4 w-4" /> Print PDF
         </Button>
-        <Separator orientation="vertical" className="h-6 bg-[#1E2D45]" />
-        <Button variant="ghost" onClick={handleExportExcel} className="text-white hover:text-foreground hover:bg-[#1E2D45] gap-2">
+        <Separator orientation="vertical" className="h-6 bg-white/20" />
+        <Button variant="ghost" onClick={handleExportExcel} className="text-white hover:text-white hover:bg-white/10 gap-2">
           <Download className="h-4 w-4" /> Export Excel
         </Button>
-        <Separator orientation="vertical" className="h-6 bg-[#1E2D45]" />
-        <Button variant="ghost" onClick={handleCopyMarkdown} className="text-white hover:text-foreground hover:bg-[#1E2D45] gap-2">
+        <Separator orientation="vertical" className="h-6 bg-white/20" />
+        <Button variant="ghost" onClick={handleCopyMarkdown} className="text-white hover:text-white hover:bg-white/10 gap-2">
           <Copy className="h-4 w-4" /> Copy Markdown
         </Button>
       </div>

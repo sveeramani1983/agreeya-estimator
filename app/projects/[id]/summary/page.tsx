@@ -7,8 +7,12 @@ import {
   getAdditionalCosts,
   getCommercialsConfig,
   getAssumptions,
-  getRisks
+  getRisks,
+  getProjectPhases,
+  getBurnRateData,
+  getWBSActuals,
 } from "@/lib/actions"
+import { WBSComponentWithActual } from "@/lib/types"
 import { ProjectSummary } from "@/components/project-summary"
 
 interface PageProps {
@@ -26,7 +30,10 @@ export default async function SummaryPage({ params }: PageProps) {
     additionalCosts,
     commercialsConfig,
     assumptions,
-    risks
+    risks,
+    phases,
+    burnRateData,
+    actuals,
   ] = await Promise.all([
     getProject(id),
     getWBSComponents(id),
@@ -35,12 +42,27 @@ export default async function SummaryPage({ params }: PageProps) {
     getAdditionalCosts(id),
     getCommercialsConfig(id),
     getAssumptions(id),
-    getRisks(id)
+    getRisks(id),
+    getProjectPhases(id),
+    getBurnRateData(id),
+    getWBSActuals(id),
   ])
 
   if (!project) {
     notFound()
   }
+
+  // Merge actuals into WBS components
+  const wbsWithActuals: WBSComponentWithActual[] = wbsComponents.map(c => {
+    const actual = actuals.find(a => a.wbs_component_id === c.id)
+    return {
+      ...c,
+      actual_hours: actual?.actual_hours ?? null,
+      accuracy_pct: actual && c.base_hours > 0
+        ? Math.round((actual.actual_hours / c.base_hours) * 100)
+        : null,
+    }
+  })
 
   // Calculate totals needed for summary
   const totalLaborCost = laborCosts.reduce((acc, curr) => acc + curr.total_cost, 0)
@@ -48,7 +70,7 @@ export default async function SummaryPage({ params }: PageProps) {
     return acc + (curr.cost_type === 'monthly' ? curr.amount * curr.duration_months : curr.amount)
   }, 0)
   const totalProjectCost = totalLaborCost + totalAdditionalCosts
-  
+
   let marginAmount = 0
   let quotedPrice = totalProjectCost
 
@@ -68,7 +90,7 @@ export default async function SummaryPage({ params }: PageProps) {
     <div className="min-h-full bg-[#0D1526]/30 -m-6 p-6">
       <ProjectSummary
         project={project}
-        wbsComponents={wbsComponents}
+        wbsComponents={wbsWithActuals}
         overheadConfig={overheadConfig}
         laborCosts={laborCosts}
         additionalCosts={additionalCosts}
@@ -76,6 +98,8 @@ export default async function SummaryPage({ params }: PageProps) {
         totals={totals}
         assumptions={assumptions}
         risks={risks}
+        phases={phases}
+        burnRateData={burnRateData}
       />
     </div>
   )

@@ -1,4 +1,5 @@
 export type ProjectStatus = 'draft' | 'submitted' | 'won' | 'lost';
+export type ProjectLifecycleStatus = 'not_started' | 'in_progress' | 'on_hold' | 'completed';
 
 export interface Project {
   id: string;
@@ -13,6 +14,9 @@ export interface Project {
   timeline_duration_unit: 'weeks' | 'months' | null;
   status: ProjectStatus;
   outcome_data: string | null;
+  project_status?: ProjectLifecycleStatus;
+  project_start_date?: string | null;
+  project_target_end_date?: string | null;
   created_at: string;
   updated_at: string;
   total_hours?: number;
@@ -160,4 +164,67 @@ export interface Assumption {
   status: 'open' | 'accepted' | 'resolved' | 'transferred';
   sort_order: number;
   created_at: string;
+}
+
+export interface Phase {
+  id: string;
+  project_id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  color: string;
+  sort_order: number;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface PhaseTemplatePhase {
+  name: string;
+  durationWeeks: number;
+  color: string;
+  offsetWeeks: number;
+}
+
+export interface PhaseTemplate {
+  id: string;
+  template_name: string;
+  engagement_type: string;
+  phases_json: string;
+  is_default: number;
+}
+
+export interface CoverageWarning {
+  phaseId: string;
+  phaseName: string;
+  resourceId: string;
+  resourceName: string;
+  message: string;
+  severity: 'warning' | 'info';
+}
+
+export interface ResourceGanttData {
+  resources: Resource[];
+  loading: ResourceLoading[];
+}
+
+export interface WBSActual {
+  id: string;
+  project_id: string;
+  wbs_component_id: string;
+  actual_hours: number;
+  recorded_at: string;
+  notes: string | null;
+}
+
+export interface WBSComponentWithActual extends WBSComponent {
+  actual_hours?: number | null;
+  accuracy_pct?: number | null; // actual/estimated*100; null if no actual recorded
+}
+
+export interface PeriodCost {
+  period: string;        // raw key: YYYY-MM-DD (weekly) or YYYY-MM (monthly)
+  label: string;         // display: "Jan 6" or "Jan 2025"
+  cost: number;          // raw labor cost
+  margined_cost: number; // cost with margin applied when !rates_include_margin
+  cumulative: number;    // running total of margined_cost
 }

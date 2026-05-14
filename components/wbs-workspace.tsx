@@ -27,6 +27,7 @@ import {
   Layers,
   Activity,
   MoreHorizontal,
+  BarChart2,
 } from "lucide-react"
 import { v4 as uuidv4 } from "uuid"
 import debounce from "lodash.debounce"
@@ -76,10 +77,11 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 
-import { WBSComponent } from "@/lib/types"
+import { WBSComponent, WBSActual, Project } from "@/lib/types"
 import { updateWBSComponents, createLibraryComponent } from "@/lib/actions"
 import { AddFromLibraryModal } from "./add-from-library-modal"
 import { useSaveStatus } from "@/components/save-status-context"
+import { ActualsSheet } from "@/components/actuals-sheet"
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -116,11 +118,13 @@ interface WBSWorkspaceProps {
   projectId: string
   initialComponents: WBSComponent[]
   library: any[]
+  project?: Project
+  initialActuals?: WBSActual[]
 }
 
 // ── Main Component ─────────────────────────────────────────
 
-export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorkspaceProps) {
+export function WBSWorkspace({ projectId, initialComponents, library, project, initialActuals = [] }: WBSWorkspaceProps) {
   const [components, setComponents] = useState<WBSComponent[]>(initialComponents)
   const { setSaveState } = useSaveStatus()
   const saveCount = useRef(0)
@@ -131,6 +135,7 @@ export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorks
   const [searchTerm, setSearchTerm] = useState("")
   const [sortBy, setSortBy] = useState("all")
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+  const [actualsOpen, setActualsOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const toggleRowExpansion = (id: string) => {
@@ -160,6 +165,19 @@ export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorks
 
     return { storyPoints, baseHours, contingencyHours, totalHours, weightedContingency }
   }, [components])
+
+  // Accuracy KPI from recorded actuals
+  const accuracyKPI = useMemo(() => {
+    if (!initialActuals.length) return null
+    const billable = components.filter(c => c.complexity !== "spike" && c.base_hours > 0)
+    let totalEst = 0, totalAct = 0
+    for (const c of billable) {
+      const a = initialActuals.find(a => a.wbs_component_id === c.id)
+      if (a) { totalEst += c.base_hours; totalAct += a.actual_hours }
+    }
+    if (!totalEst) return null
+    return Math.round((totalAct / totalEst) * 100)
+  }, [components, initialActuals])
 
   // Velocity check uses live SP total from the same memo
   const velocityCheck = useMemo(() => {
@@ -471,7 +489,13 @@ export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorks
               const scheme: "green" | "amber" | "red" = score >= 80 ? "green" : score >= 60 ? "amber" : "red"
               return <StatTile label="Confidence" value={`${score}%`} colorScheme={scheme} />
             })()}
+            {accuracyKPI !== null && (() => {
+              const scheme: "green" | "amber" | "red" = accuracyKPI <= 100 ? "green" : accuracyKPI <= 120 ? "amber" : "red"
+              return <StatTile label="Est. Accuracy" value={`${accuracyKPI}%`} colorScheme={scheme} />
+            })()}
           </div>
+
+          <Separator orientation="vertical" className="h-8 mx-2" />
 
           {/* Actions */}
           <div className="flex items-center gap-2 shrink-0">
@@ -497,7 +521,7 @@ export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorks
                         Velocity Check
                         {!velocityCheck.achievable && <AlertTriangle className="h-4 w-4" />}
                       </SheetTrigger>
-                <SheetContent className="sm:max-w-md sm:!max-w-md overflow-y-auto">
+                <SheetContent className="sm:max-w-xl sm:!max-w-xl overflow-y-auto">
                   <SheetHeader className="pb-6 border-b">
                     <SheetTitle className="flex items-center gap-2">
                       <Activity className="h-5 w-5 text-primary" />
@@ -508,7 +532,7 @@ export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorks
                     </SheetDescription>
                   </SheetHeader>
                   
-                  <div className="mt-8 space-y-8">
+                  <div className="mt-8 space-y-8 px-4">
                     <div className="grid grid-cols-2 gap-6">
                       <div className="space-y-2">
                         <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Sprint Velocity (SP)</label>
@@ -594,6 +618,17 @@ export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorks
                   </TooltipContent>
                 )}
               </Tooltip>
+
+              {project?.status === 'won' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 h-9 px-3 rounded-xl text-green-400 border-green-800 bg-green-900/20 hover:bg-green-900/30"
+                  onClick={() => setActualsOpen(true)}
+                >
+                  <BarChart2 className="h-4 w-4" /> Record Actuals
+                </Button>
+              )}
 
               <DropdownMenu>
                 <DropdownMenuTrigger
@@ -783,6 +818,16 @@ export function WBSWorkspace({ projectId, initialComponents, library }: WBSWorks
           </AlertDialogContent>
         </AlertDialog>
 
+        {project?.status === 'won' && (
+          <ActualsSheet
+            projectId={projectId}
+            components={components}
+            existingActuals={initialActuals}
+            open={actualsOpen}
+            onClose={() => setActualsOpen(false)}
+          />
+        )}
+
       </div>
     </TooltipProvider>
   )
@@ -860,12 +905,17 @@ function SortableRow({
   const hasSubtasks = subtasks.length > 0
   const isAutoRolledUp = hasSubtasks && !c.is_hours_overridden
 
+  // Keep a stable ref so the effect below doesn't re-run every time the
+  // parent recreates the updateRow function reference.
+  const updateRowRef = useRef(updateRow)
+  updateRowRef.current = updateRow
+
   // Effect to keep base_hours in sync with subtasks sum if not overridden
   useEffect(() => {
     if (isAutoRolledUp && c.base_hours !== subtasksSum) {
-      updateRow(c.id, { base_hours: subtasksSum })
+      updateRowRef.current(c.id, { base_hours: subtasksSum })
     }
-  }, [subtasksSum, isAutoRolledUp, c.id, c.base_hours, updateRow])
+  }, [subtasksSum, isAutoRolledUp, c.id, c.base_hours])
 
   // Fibonacci SP display logic
   const displaySP = FIBONACCI_NUMS.includes(c.story_points)
@@ -886,9 +936,24 @@ function SortableRow({
     }
   }
 
-  const addSubtask = () => {
-    const next = [...subtasks, { id: uuidv4(), task_name: "New Sub-task", hours: 0 }]
-    updateRow(c.id, { subtasks: next })
+  const ghostIdRef = useRef(uuidv4())
+  const [ghostName, setGhostName] = useState("")
+  const ghostTaskRef = useRef<HTMLInputElement | null>(null)
+
+  const handleGhostNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value
+    if (!val.trim()) { setGhostName(val); return }
+    // Rotate the ghost ID first so the next render's ghost row gets a fresh key.
+    // React will then reuse the current ghost DOM element as the newly committed row
+    // (same key, same list position), keeping focus and the typed character intact.
+    const committedId = ghostIdRef.current
+    ghostIdRef.current = uuidv4()
+    setGhostName("")
+    updateRow(c.id, { subtasks: [...subtasks, { id: committedId, task_name: val, hours: 0 }] })
+  }
+
+  const handleSubtaskBlur = (sid: string, taskName: string) => {
+    if (!taskName.trim()) removeSubtask(sid)
   }
 
   const updateSubtask = (sid: string, updates: any) => {
@@ -1067,66 +1132,94 @@ function SortableRow({
       {isExpanded && (
         <TableRow className="bg-[#0D1526]/40 hover:bg-[#0D1526]/40">
           <TableCell />
-          <TableCell colSpan={11} className="py-6 px-8 border-l-2 border-l-sidebar/20">
-            <div className="grid grid-cols-2 gap-12">
+          <TableCell colSpan={11} className="py-2 px-4 border-l-2 border-l-sidebar/20">
+            <div className="grid grid-cols-2 gap-4">
               {/* Sub-tasks Section */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-sidebar flex items-center gap-2">
-                    <Layers className="h-3 w-3" /> Sub-task Breakdown
-                  </h4>
-                  <Button variant="outline" size="sm" onClick={addSubtask} className="h-7 text-[10px] gap-1 px-2">
-                    <Plus className="h-3 w-3" /> Add Sub-task
-                  </Button>
-                </div>
-                
-                <div className="rounded-md border border-[#1E2D45] bg-[#111827] shadow-sm overflow-hidden">
+              <div className="space-y-1.5">
+                <h4 className="text-[10px] font-bold uppercase tracking-wider text-sidebar flex items-center gap-1.5">
+                  <Layers className="h-3 w-3" /> Sub-task Breakdown
+                </h4>
+
+                <div className="rounded border border-[#1E2D45] bg-[#111827] overflow-hidden">
                   <Table>
                     <TableHeader className="bg-[#0D1526]">
-                      <TableRow className="h-8">
-                        <TableHead className="text-[10px] py-0 px-3">Task Description</TableHead>
-                        <TableHead className="text-[10px] py-0 px-3 w-[80px] text-center">Hours</TableHead>
-                        <TableHead className="text-[10px] py-0 px-3 w-[40px]"></TableHead>
+                      <TableRow className="h-6">
+                        <TableHead className="text-[10px] py-0 px-2">Task Description</TableHead>
+                        <TableHead className="text-[10px] py-0 px-2 w-[72px] text-center">Hours</TableHead>
+                        <TableHead className="text-[10px] py-0 px-1 w-[32px]"></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {subtasks.map(s => (
-                        <TableRow key={s.id} className="h-9">
-                          <TableCell className="py-0 px-3">
-                            <input 
-                              value={s.task_name} 
-                              onChange={e => updateSubtask(s.id, { task_name: e.target.value })}
-                              className="w-full bg-transparent border-none focus:ring-0 text-xs p-0 h-7"
-                              placeholder="e.g., Database Design"
+                      {/* Committed rows + ghost in ONE flat array so React can match keys
+                          across all siblings and reuse the ghost DOM element on commit. */}
+                      {[
+                        ...subtasks.map(s => (
+                          <TableRow key={s.id} className="h-7">
+                            <TableCell className="py-0 px-2">
+                              <input
+                                value={s.task_name}
+                                onChange={e => updateSubtask(s.id, { task_name: e.target.value })}
+                                onFocus={e => e.target.select()}
+                                onBlur={e => handleSubtaskBlur(s.id, e.target.value)}
+                                className="w-full bg-transparent border-none focus:ring-0 text-xs p-0 h-6"
+                                placeholder="Task description"
+                              />
+                            </TableCell>
+                            <TableCell className="py-0 px-2">
+                              <input
+                                type="number"
+                                min="0"
+                                value={s.hours}
+                                onChange={e => updateSubtask(s.id, { hours: Number(e.target.value) })}
+                                onFocus={e => e.target.select()}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' || e.key === 'Tab') {
+                                    e.preventDefault()
+                                    ghostTaskRef.current?.focus()
+                                  }
+                                }}
+                                className="w-full bg-transparent border-none focus:ring-0 text-xs text-center p-0 h-6 font-medium"
+                              />
+                            </TableCell>
+                            <TableCell className="py-0 px-1 text-right">
+                              <Button variant="ghost" size="icon-sm" onClick={() => removeSubtask(s.id)} className="h-5 w-5 text-muted-foreground hover:text-red-600">
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        )),
+                        // Ghost row shares the key pool with committed rows above, so when
+                        // handleGhostNameChange rotates ghostIdRef and adds a committed subtask
+                        // with the old ghost key, React sees the same key at the same list
+                        // position and reuses the DOM element — preserving focus and the
+                        // first typed character without any manual focus management.
+                        <TableRow key={ghostIdRef.current} className="h-7 opacity-40 hover:opacity-90 focus-within:opacity-90 transition-opacity">
+                          <TableCell className="py-0 px-2">
+                            <input
+                              ref={ghostTaskRef}
+                              value={ghostName}
+                              onChange={handleGhostNameChange}
+                              className="w-full bg-transparent border-none focus:ring-0 text-xs p-0 h-6"
+                              placeholder="+ Add sub-task…"
                             />
                           </TableCell>
-                          <TableCell className="py-0 px-3">
-                            <input 
+                          <TableCell className="py-0 px-2">
+                            <input
                               type="number"
                               min="0"
-                              value={s.hours} 
-                              onChange={e => updateSubtask(s.id, { hours: Number(e.target.value) })}
-                              className="w-full bg-transparent border-none focus:ring-0 text-xs text-center p-0 h-7 font-medium"
+                              defaultValue={0}
+                              readOnly
+                              tabIndex={-1}
+                              className="w-full bg-transparent border-none focus:ring-0 text-xs text-center p-0 h-6 font-medium opacity-0 pointer-events-none"
                             />
                           </TableCell>
-                          <TableCell className="py-0 px-2 text-right">
-                            <Button variant="ghost" size="icon-sm" onClick={() => removeSubtask(s.id)} className="h-6 w-6 text-muted-foreground hover:text-red-600">
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {subtasks.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={3} className="h-16 text-center text-xs text-muted-foreground italic">
-                            No sub-tasks added yet. Break down the estimation for better accuracy.
-                          </TableCell>
-                        </TableRow>
-                      )}
+                          <TableCell />
+                        </TableRow>,
+                      ]}
                       {subtasks.length > 0 && (
                         <TableRow className="bg-[#1E2D45]/30 font-bold border-t border-[#1E2D45]">
-                          <TableCell className="py-2 px-3 text-[10px] uppercase">Roll-up Total</TableCell>
-                          <TableCell className="py-2 px-3 text-xs text-center tabular-nums">{subtasksSum}</TableCell>
+                          <TableCell className="py-1 px-2 text-[10px] uppercase">Roll-up Total</TableCell>
+                          <TableCell className="py-1 px-2 text-xs text-center tabular-nums">{subtasksSum}</TableCell>
                           <TableCell />
                         </TableRow>
                       )}
@@ -1136,15 +1229,15 @@ function SortableRow({
               </div>
 
               {/* Notes Section */}
-              <div className="space-y-4">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-sidebar flex items-center gap-2">
-                  <Info className="h-3 w-3" /> Detailed Component Notes
+              <div className="space-y-1.5">
+                <h4 className="text-[10px] font-bold uppercase tracking-wider text-sidebar flex items-center gap-1.5">
+                  <Info className="h-3 w-3" /> Notes
                 </h4>
-                <Textarea 
+                <Textarea
                   value={c.notes || ""}
                   onChange={e => updateRow(c.id, { notes: e.target.value })}
-                  placeholder="Enter detailed assumptions, exclusions, or discovery scope here..."
-                  className="min-h-[160px] text-xs leading-relaxed resize-none bg-[#111827] shadow-sm"
+                  placeholder="Assumptions, exclusions, discovery scope…"
+                  className="min-h-[80px] text-xs leading-relaxed resize-none bg-[#111827]"
                 />
               </div>
             </div>

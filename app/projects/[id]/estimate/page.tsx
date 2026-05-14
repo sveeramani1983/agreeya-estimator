@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { getProject, getWBSComponents, getLibraryComponents } from "@/lib/actions"
+import { getProject, getWBSComponents, getLibraryComponents, getWBSActuals } from "@/lib/actions"
 import { WBSWorkspace } from "@/components/wbs-workspace"
 
 interface PageProps {
@@ -8,11 +8,12 @@ interface PageProps {
 
 export default async function EstimatePage({ params }: PageProps) {
   const { id } = await params
-  
-  const [project, initialComponents, library] = await Promise.all([
+
+  const [project, initialComponents, library, initialActuals] = await Promise.all([
     getProject(id),
     getWBSComponents(id),
-    getLibraryComponents()
+    getLibraryComponents(),
+    getWBSActuals(id),
   ])
 
   if (!project) {
@@ -20,10 +21,12 @@ export default async function EstimatePage({ params }: PageProps) {
   }
 
   return (
-    <WBSWorkspace 
-      projectId={id} 
-      initialComponents={initialComponents} 
-      library={library} 
+    <WBSWorkspace
+      projectId={id}
+      initialComponents={initialComponents}
+      library={library}
+      project={project}
+      initialActuals={initialActuals}
     />
   )
 }

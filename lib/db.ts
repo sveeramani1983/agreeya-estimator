@@ -137,6 +137,48 @@ export function getDb() {
           )
         `);
 
+        // Project phases table
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS project_phases (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            color TEXT DEFAULT '#2563EB',
+            sort_order INTEGER DEFAULT 0,
+            notes TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        // Phase templates table
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS phase_templates (
+            id TEXT PRIMARY KEY,
+            template_name TEXT NOT NULL,
+            engagement_type TEXT NOT NULL,
+            phases_json TEXT NOT NULL,
+            is_default INTEGER DEFAULT 0
+          )
+        `);
+
+        // Historical accuracy tracking — separate from wbs_components to survive
+        // the DELETE+reinsert cycle that updateWBSComponents does on every autosave.
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS wbs_actuals (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            wbs_component_id TEXT NOT NULL,
+            actual_hours REAL NOT NULL DEFAULT 0,
+            recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            notes TEXT,
+            UNIQUE(project_id, wbs_component_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+          )
+        `);
+
         // Rate card onsite / offshore rates
         for (const sql of [
             "ALTER TABLE rate_card ADD COLUMN onsite_rate REAL",
@@ -145,6 +187,16 @@ export function getDb() {
         // Migrate existing standard_rate → onsite_rate, derive offshore default
         try { db.exec("UPDATE rate_card SET onsite_rate = standard_rate WHERE onsite_rate IS NULL OR onsite_rate = 0"); } catch (_) {}
         try { db.exec("UPDATE rate_card SET offshore_rate = ROUND(onsite_rate * 0.30) WHERE offshore_rate IS NULL OR offshore_rate = 0"); } catch (_) {}
+
+        // Project lifecycle status (separate from estimate status)
+        const lifecycleMigrations = [
+            "ALTER TABLE projects ADD COLUMN project_status TEXT DEFAULT 'not_started'",
+            "ALTER TABLE projects ADD COLUMN project_start_date TEXT",
+            "ALTER TABLE projects ADD COLUMN project_target_end_date TEXT",
+        ];
+        for (const sql of lifecycleMigrations) {
+            try { db.exec(sql); } catch (_) {}
+        }
 
         // Seed if empty
         seedDatabase(db);
@@ -158,6 +210,113 @@ export function getDb() {
     }
     return db;
 }
+
+const PHASE_COLORS = ['#2563EB','#7C3AED','#059669','#D97706','#DC2626','#0891B2','#9333EA','#16A34A'];
+const pc = (i: number) => PHASE_COLORS[i % PHASE_COLORS.length];
+
+const PHASE_TEMPLATES_SEED = [
+    {
+        id: uuidv4(), template_name: 'Custom Software Build',
+        engagement_type: 'Custom Development', is_default: 1,
+        phases_json: JSON.stringify([
+            { name: 'Discovery & Requirements',        durationWeeks: 2, color: pc(0), offsetWeeks: 0  },
+            { name: 'Technical Design & Architecture', durationWeeks: 3, color: pc(1), offsetWeeks: 2  },
+            { name: 'Development',                     durationWeeks: 9, color: pc(2), offsetWeeks: 5  },
+            { name: 'Integration & System Testing',    durationWeeks: 2, color: pc(3), offsetWeeks: 14 },
+            { name: 'UAT & Acceptance',                durationWeeks: 2, color: pc(4), offsetWeeks: 16 },
+            { name: 'Deployment & Go-Live',            durationWeeks: 1, color: pc(5), offsetWeeks: 18 },
+            { name: 'Warranty & Hypercare',            durationWeeks: 4, color: pc(6), offsetWeeks: 19 },
+        ])
+    },
+    {
+        id: uuidv4(), template_name: 'Platform Implementation',
+        engagement_type: 'Platform / ERP', is_default: 0,
+        phases_json: JSON.stringify([
+            { name: 'Discovery & Fit-Gap Analysis', durationWeeks: 2, color: pc(0), offsetWeeks: 0  },
+            { name: 'Solution Design',              durationWeeks: 3, color: pc(1), offsetWeeks: 2  },
+            { name: 'Configuration & Build',        durationWeeks: 8, color: pc(2), offsetWeeks: 5  },
+            { name: 'Data Migration',               durationWeeks: 3, color: pc(3), offsetWeeks: 10 },
+            { name: 'Integration Development',      durationWeeks: 3, color: pc(4), offsetWeeks: 10 },
+            { name: 'UAT & Training',               durationWeeks: 2, color: pc(5), offsetWeeks: 13 },
+            { name: 'Go-Live & Hypercare',          durationWeeks: 3, color: pc(6), offsetWeeks: 15 },
+        ])
+    },
+    {
+        id: uuidv4(), template_name: 'Portal / Web Application',
+        engagement_type: 'Web Application', is_default: 0,
+        phases_json: JSON.stringify([
+            { name: 'Discovery & UX Research',           durationWeeks: 2, color: pc(0), offsetWeeks: 0  },
+            { name: 'Information Architecture & Design', durationWeeks: 2, color: pc(1), offsetWeeks: 2  },
+            { name: 'Frontend Development',              durationWeeks: 6, color: pc(2), offsetWeeks: 4  },
+            { name: 'Backend Development',               durationWeeks: 6, color: pc(3), offsetWeeks: 4  },
+            { name: 'Integration & API Development',     durationWeeks: 3, color: pc(4), offsetWeeks: 8  },
+            { name: 'QA & Performance Testing',          durationWeeks: 2, color: pc(5), offsetWeeks: 11 },
+            { name: 'UAT',                               durationWeeks: 1, color: pc(6), offsetWeeks: 13 },
+            { name: 'Go-Live',                           durationWeeks: 1, color: pc(7), offsetWeeks: 14 },
+        ])
+    },
+    {
+        id: uuidv4(), template_name: 'System Integration',
+        engagement_type: 'Integration', is_default: 0,
+        phases_json: JSON.stringify([
+            { name: 'Integration Discovery & Analysis', durationWeeks: 2, color: pc(0), offsetWeeks: 0  },
+            { name: 'API Design & Architecture',        durationWeeks: 2, color: pc(1), offsetWeeks: 2  },
+            { name: 'Integration Development',          durationWeeks: 6, color: pc(2), offsetWeeks: 4  },
+            { name: 'Unit & Integration Testing',       durationWeeks: 2, color: pc(3), offsetWeeks: 10 },
+            { name: 'End-to-End Testing',               durationWeeks: 2, color: pc(4), offsetWeeks: 10 },
+            { name: 'UAT',                              durationWeeks: 1, color: pc(5), offsetWeeks: 12 },
+            { name: 'Go-Live',                          durationWeeks: 1, color: pc(6), offsetWeeks: 13 },
+        ])
+    },
+    {
+        id: uuidv4(), template_name: 'Data & Analytics',
+        engagement_type: 'Data / BI', is_default: 0,
+        phases_json: JSON.stringify([
+            { name: 'Data Discovery & Profiling',      durationWeeks: 2, color: pc(0), offsetWeeks: 0  },
+            { name: 'Data Architecture & Modeling',    durationWeeks: 2, color: pc(1), offsetWeeks: 2  },
+            { name: 'ETL / Pipeline Development',      durationWeeks: 6, color: pc(2), offsetWeeks: 4  },
+            { name: 'Dashboard & Visualization Build', durationWeeks: 4, color: pc(3), offsetWeeks: 8  },
+            { name: 'Data Quality & Validation',       durationWeeks: 2, color: pc(4), offsetWeeks: 10 },
+            { name: 'UAT & Business Acceptance',       durationWeeks: 1, color: pc(5), offsetWeeks: 12 },
+            { name: 'Go-Live',                          durationWeeks: 1, color: pc(6), offsetWeeks: 13 },
+        ])
+    },
+    {
+        id: uuidv4(), template_name: 'Mobile Application',
+        engagement_type: 'Mobile', is_default: 0,
+        phases_json: JSON.stringify([
+            { name: 'Discovery & UX Design',        durationWeeks: 2, color: pc(0), offsetWeeks: 0  },
+            { name: 'Technical Architecture',        durationWeeks: 1, color: pc(1), offsetWeeks: 2  },
+            { name: 'iOS / Android Development',     durationWeeks: 8, color: pc(2), offsetWeeks: 3  },
+            { name: 'Backend API Development',       durationWeeks: 6, color: pc(3), offsetWeeks: 3  },
+            { name: 'Integration & Device Testing',  durationWeeks: 2, color: pc(4), offsetWeeks: 9  },
+            { name: 'UAT & App Store Submission',    durationWeeks: 2, color: pc(5), offsetWeeks: 11 },
+            { name: 'Launch',                        durationWeeks: 1, color: pc(6), offsetWeeks: 13 },
+        ])
+    },
+    {
+        id: uuidv4(), template_name: 'Cloud / Infrastructure Migration',
+        engagement_type: 'Infrastructure', is_default: 0,
+        phases_json: JSON.stringify([
+            { name: 'Assessment & Planning',           durationWeeks: 2, color: pc(0), offsetWeeks: 0  },
+            { name: 'Architecture Design',             durationWeeks: 2, color: pc(1), offsetWeeks: 2  },
+            { name: 'Environment Setup & Configuration', durationWeeks: 3, color: pc(2), offsetWeeks: 4 },
+            { name: 'Migration Wave 1',                durationWeeks: 3, color: pc(3), offsetWeeks: 7  },
+            { name: 'Migration Wave 2',                durationWeeks: 3, color: pc(4), offsetWeeks: 10 },
+            { name: 'Performance & Security Testing',  durationWeeks: 2, color: pc(5), offsetWeeks: 13 },
+            { name: 'Cutover & Hypercare',             durationWeeks: 2, color: pc(6), offsetWeeks: 15 },
+        ])
+    },
+    {
+        id: uuidv4(), template_name: 'Custom',
+        engagement_type: 'Custom', is_default: 0,
+        phases_json: JSON.stringify([
+            { name: 'Phase 1', durationWeeks: 4, color: pc(0), offsetWeeks: 0 },
+            { name: 'Phase 2', durationWeeks: 4, color: pc(1), offsetWeeks: 4 },
+            { name: 'Phase 3', durationWeeks: 4, color: pc(2), offsetWeeks: 8 },
+        ])
+    },
+];
 
 function seedDatabase(db: Database.Database) {
     const rateCardCount = db.prepare('SELECT COUNT(*) as count FROM rate_card').get() as { count: number };
@@ -219,6 +378,15 @@ function seedDatabase(db: Database.Database) {
             for (const item of items) insertComp.run(item.id, item.cat, item.name, item.desc, item.comp, item.sp, item.hrs);
         });
         transaction(components);
+    }
+
+    const phaseTemplateCount = db.prepare('SELECT COUNT(*) as count FROM phase_templates').get() as { count: number };
+    if (phaseTemplateCount.count === 0) {
+        console.log('Seeding phase_templates...');
+        const insertTpl = db.prepare('INSERT INTO phase_templates (id, template_name, engagement_type, phases_json, is_default) VALUES (?, ?, ?, ?, ?)');
+        db.transaction((items: typeof PHASE_TEMPLATES_SEED) => {
+            for (const t of items) insertTpl.run(t.id, t.template_name, t.engagement_type, t.phases_json, t.is_default);
+        })(PHASE_TEMPLATES_SEED);
     }
 }
 

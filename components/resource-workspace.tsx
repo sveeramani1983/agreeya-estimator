@@ -791,22 +791,9 @@ export function ResourceWorkspace({
         <section>
           <Card className="border-sidebar/20 shadow-sm">
             <CardHeader className="pb-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Calendar className="h-5 w-5 text-sidebar" />
-                  <CardTitle className="text-lg">Project Timeline</CardTitle>
-                </div>
-                {timelineStart && effectiveTimelineEnd && resources.length > 0 && (
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={() => setApplyTimelineOpen(true)}
-                    className="gap-2 text-xs bg-primary text-primary-foreground hover:bg-primary/90"
-                  >
-                    <Users className="h-3.5 w-3.5" />
-                    Apply Timeline to All Resources
-                  </Button>
-                )}
+              <div className="flex items-center gap-2">
+                <Calendar className="h-5 w-5 text-sidebar" />
+                <CardTitle className="text-lg">Project Timeline</CardTitle>
               </div>
             </CardHeader>
             <CardContent className="space-y-5">
@@ -944,23 +931,36 @@ export function ResourceWorkspace({
               )}
 
               {/* Apply / Reset buttons */}
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={handleCommitTimeline}
-                  disabled={!isDirty}
-                  className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
-                >
-                  Apply Timeline
-                </Button>
-                {isDirty && (
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
                   <Button
-                    variant="ghost"
                     size="sm"
-                    onClick={handleResetTimeline}
-                    className="text-muted-foreground"
+                    onClick={handleCommitTimeline}
+                    disabled={!isDirty}
+                    className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
                   >
-                    Reset
+                    Apply Timeline
+                  </Button>
+                  {isDirty && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleResetTimeline}
+                      className="text-muted-foreground"
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
+                {timelineStart && effectiveTimelineEnd && resources.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setApplyTimelineOpen(true)}
+                    className="gap-2 text-xs"
+                  >
+                    <Users className="h-3.5 w-3.5" />
+                    Apply Timeline to All Resources
                   </Button>
                 )}
               </div>

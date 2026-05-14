@@ -3,7 +3,7 @@
 import { getDb } from "@/lib/db";
 import { v4 as uuidv4 } from "uuid";
 import { revalidatePath } from "next/cache";
-import { Project, ProjectStatus, WBSComponent, OverheadConfig, CustomOverhead, Resource, ResourceLoading, RateCardItem, AdditionalCost, CommercialsConfig, EstimateVersion, Assumption } from "./types";
+import { Project, ProjectStatus, WBSComponent, OverheadConfig, CustomOverhead, Resource, ResourceLoading, RateCardItem, AdditionalCost, CommercialsConfig, EstimateVersion, Assumption, Phase, PhaseTemplate, CoverageWarning, ResourceGanttData, WBSActual, PeriodCost } from "./types";
 
 export async function getProjects() {
   try {
@@ -105,7 +105,10 @@ export async function updateProject(id: string, updates: Partial<Project>) {
     if (updates.tax_percent !== undefined) { setClauses.push("tax_percent = ?"); values.push(updates.tax_percent); }
     if (updates.tax_mode !== undefined) { setClauses.push("tax_mode = ?"); values.push(updates.tax_mode); }
     if (updates.loading_period_type !== undefined) { setClauses.push("loading_period_type = ?"); values.push(updates.loading_period_type); }
-    
+    if (updates.project_status !== undefined) { setClauses.push("project_status = ?"); values.push(updates.project_status); }
+    if (updates.project_start_date !== undefined) { setClauses.push("project_start_date = ?"); values.push(updates.project_start_date); }
+    if (updates.project_target_end_date !== undefined) { setClauses.push("project_target_end_date = ?"); values.push(updates.project_target_end_date); }
+
     if (setClauses.length > 0) {
       values.push(id);
       db.prepare(`UPDATE projects SET ${setClauses.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(...values);
@@ -1365,5 +1368,240 @@ export async function getAnalyticsData() {
   } catch (error) {
     console.error("Failed to get analytics data:", error);
     return { projects: [], won: [], lost: [], submitted: [], draft: [], winRate: 0, avgDealSize: 0, winFactorCounts: {}, lossReasonCounts: {}, avgPriceGap: null, totalPipeline: 0 };
+  }
+}
+
+// ── Phase Planning ────────────────────────────────────────────────────────────
+
+export async function getProjectPhases(projectId: string): Promise<Phase[]> {
+  try {
+    const db = getDb();
+    return db.prepare(
+      "SELECT * FROM project_phases WHERE project_id = ? ORDER BY sort_order ASC, start_date ASC"
+    ).all(projectId) as Phase[];
+  } catch (error) {
+    console.error("Failed to fetch project phases:", error);
+    return [];
+  }
+}
+
+export async function saveProjectPhases(
+  projectId: string,
+  phases: Phase[]
+): Promise<void> {
+  try {
+    const db = getDb();
+    db.transaction(() => {
+      db.prepare("DELETE FROM project_phases WHERE project_id = ?").run(projectId);
+      const insert = db.prepare(`
+        INSERT INTO project_phases (id, project_id, name, start_date, end_date, color, sort_order, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      phases.forEach((phase, index) => {
+        insert.run(
+          phase.id,
+          projectId,
+          phase.name,
+          phase.start_date,
+          phase.end_date,
+          phase.color ?? '#2563EB',
+          index,
+          phase.notes ?? null
+        );
+      });
+    })();
+    revalidatePath(`/projects/${projectId}/schedule`);
+    revalidatePath(`/projects/${projectId}/summary`);
+  } catch (error) {
+    console.error("Failed to save project phases:", error);
+    throw error;
+  }
+}
+
+export async function getPhaseTemplates(): Promise<PhaseTemplate[]> {
+  try {
+    const db = getDb();
+    return db.prepare(
+      "SELECT * FROM phase_templates ORDER BY template_name ASC"
+    ).all() as PhaseTemplate[];
+  } catch (error) {
+    console.error("Failed to fetch phase templates:", error);
+    return [];
+  }
+}
+
+export async function getResourceGanttData(projectId: string): Promise<ResourceGanttData> {
+  try {
+    const db = getDb();
+    const resources = db.prepare(
+      "SELECT * FROM resources WHERE project_id = ? ORDER BY name ASC"
+    ).all(projectId) as Resource[];
+    const loading = db.prepare(
+      "SELECT * FROM resource_loading WHERE project_id = ?"
+    ).all(projectId) as ResourceLoading[];
+    return { resources, loading };
+  } catch (error) {
+    console.error("Failed to fetch resource gantt data:", error);
+    return { resources: [], loading: [] };
+  }
+}
+
+export async function validatePhaseCoverage(projectId: string): Promise<CoverageWarning[]> {
+  try {
+    const db = getDb();
+    const phases = db.prepare(
+      "SELECT * FROM project_phases WHERE project_id = ? ORDER BY sort_order ASC"
+    ).all(projectId) as Phase[];
+
+    if (phases.length === 0) return [];
+
+    const resources = db.prepare(
+      "SELECT * FROM resources WHERE project_id = ?"
+    ).all(projectId) as Resource[];
+
+    if (resources.length === 0) return [];
+
+    const loading = db.prepare(
+      "SELECT * FROM resource_loading WHERE project_id = ? AND hours > 0"
+    ).all(projectId) as ResourceLoading[];
+
+    const warnings: CoverageWarning[] = [];
+
+    for (const phase of phases) {
+      const phaseStart = new Date(phase.start_date);
+      const phaseEnd = new Date(phase.end_date);
+
+      for (const resource of resources) {
+        const resourceLoading = loading.filter(l => l.resource_id === resource.id);
+        if (resourceLoading.length === 0) continue;
+
+        const hasLoadingInPhase = resourceLoading.some(l => {
+          const labelDate = l.period_label.length === 10
+            ? new Date(l.period_label)
+            : new Date(l.period_label + '-01');
+          return labelDate >= phaseStart && labelDate <= phaseEnd;
+        });
+
+        if (!hasLoadingInPhase) {
+          warnings.push({
+            phaseId: phase.id,
+            phaseName: phase.name,
+            resourceId: resource.id,
+            resourceName: resource.name,
+            message: `${resource.name} has no hours loaded during "${phase.name}"`,
+            severity: 'warning',
+          });
+        }
+      }
+    }
+
+    return warnings;
+  } catch (error) {
+    console.error("Failed to validate phase coverage:", error);
+    return [];
+  }
+}
+
+// ── Burn Rate ─────────────────────────────────────────────────────────────────
+
+export async function getBurnRateData(projectId: string): Promise<PeriodCost[]> {
+  try {
+    const db = getDb();
+    const project = db.prepare("SELECT loading_period_type FROM projects WHERE id = ?").get(projectId) as any;
+    const config  = db.prepare("SELECT margin_percent, rates_include_margin FROM commercials_config WHERE project_id = ?").get(projectId) as any;
+
+    const rows = db.prepare(`
+      SELECT rl.period_label, SUM(rl.hours * r.rate_per_hour) AS period_cost
+      FROM resource_loading rl
+      JOIN resources r ON rl.resource_id = r.id
+      JOIN projects p ON r.project_id = p.id
+      WHERE r.project_id = ?
+        AND (
+          (COALESCE(p.loading_period_type, 'weekly') = 'weekly' AND length(rl.period_label) = 10) OR
+          (p.loading_period_type = 'monthly'                    AND length(rl.period_label) = 7)
+        )
+        AND rl.hours > 0
+      GROUP BY rl.period_label
+      ORDER BY rl.period_label ASC
+    `).all(projectId) as any[];
+
+    if (!rows.length) return [];
+
+    const marginMult = (config && !config.rates_include_margin && config.margin_percent > 0)
+      ? 1 + config.margin_percent / 100
+      : 1;
+
+    const isMonthly = project?.loading_period_type === "monthly";
+
+    let cumulative = 0;
+    return rows.map(row => {
+      const cost = (row.period_cost || 0);
+      const margined = cost * marginMult;
+      cumulative += margined;
+
+      // Format display label
+      let label: string;
+      if (isMonthly || row.period_label.length === 7) {
+        // YYYY-MM → "Jan 2025"
+        const [y, m] = row.period_label.split("-");
+        label = new Date(+y, +m - 1).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+      } else {
+        // YYYY-MM-DD → "Jan 6"
+        const d = new Date(row.period_label + "T00:00:00");
+        label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      }
+
+      return {
+        period: row.period_label,
+        label,
+        cost: Math.round(cost),
+        margined_cost: Math.round(margined),
+        cumulative: Math.round(cumulative),
+      };
+    });
+  } catch (error) {
+    console.error("Failed to get burn rate data:", error);
+    return [];
+  }
+}
+
+// ── Historical Accuracy ───────────────────────────────────────────────────────
+
+export async function getWBSActuals(projectId: string): Promise<WBSActual[]> {
+  try {
+    const db = getDb();
+    return db.prepare(
+      "SELECT * FROM wbs_actuals WHERE project_id = ? ORDER BY wbs_component_id"
+    ).all(projectId) as WBSActual[];
+  } catch (error) {
+    console.error("Failed to get WBS actuals:", error);
+    return [];
+  }
+}
+
+export async function upsertWBSActuals(
+  projectId: string,
+  actuals: Array<{ wbs_component_id: string; actual_hours: number; notes?: string }>
+): Promise<void> {
+  try {
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO wbs_actuals (id, project_id, wbs_component_id, actual_hours, notes)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, wbs_component_id)
+      DO UPDATE SET actual_hours = excluded.actual_hours,
+                    notes        = excluded.notes,
+                    recorded_at  = CURRENT_TIMESTAMP
+    `);
+    db.transaction((items: typeof actuals) => {
+      for (const a of items) {
+        stmt.run(uuidv4(), projectId, a.wbs_component_id, a.actual_hours, a.notes ?? null);
+      }
+    })(actuals);
+    revalidatePath(`/projects/${projectId}/estimate`);
+    revalidatePath(`/projects/${projectId}/summary`);
+  } catch (error) {
+    console.error("Failed to upsert WBS actuals:", error);
+    throw error;
   }
 }

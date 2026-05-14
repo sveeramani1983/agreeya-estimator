@@ -60,7 +60,7 @@ export default async function ProjectLayout({
           <div className="flex items-center gap-4 shrink-0">
             <ProjectStatusControl
               projectId={id}
-              currentStatus={project.status}
+              project={project}
               currentQuotedPrice={project.total_cost ?? 0}
             />
           </div>
