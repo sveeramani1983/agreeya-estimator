@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { OutcomeModal } from "@/components/outcome-modal"
-import { updateProjectOutcome, updateProject } from "@/lib/actions"
+import { updateProjectOutcome, updateProject, updateProjectPursuitData } from "@/lib/actions"
 import { Project, ProjectStatus, ProjectLifecycleStatus } from "@/lib/types"
 
 interface ProjectStatusControlProps {
@@ -71,6 +71,32 @@ export function ProjectStatusControl({
   const [savingDates, setSavingDates] = useState(false)
 
   const [savingLifecycle, setSavingLifecycle] = useState(false)
+
+  // Win probability inline state
+  const defaultProb = currentStatus === 'won' ? 100 : currentStatus === 'lost' ? 0 : (project.win_probability ?? 50)
+  const [winProb, setWinProb] = useState(defaultProb)
+  const [savingProb, setSavingProb] = useState(false)
+
+  async function handleProbBlur() {
+    const clamped = Math.min(100, Math.max(0, winProb))
+    setWinProb(clamped)
+    if (clamped === (project.win_probability ?? 50)) return
+    setSavingProb(true)
+    try {
+      await updateProjectPursuitData(projectId, { win_probability: clamped })
+      router.refresh()
+    } catch {
+      toast.error("Failed to save win probability.")
+    } finally {
+      setSavingProb(false)
+    }
+  }
+
+  function probDotClass(p: number) {
+    if (p >= 70) return "bg-green-500"
+    if (p >= 40) return "bg-amber-500"
+    return "bg-red-500"
+  }
 
   async function handleEstimateStatusChange(newStatus: string) {
     const status = newStatus as ProjectStatus
@@ -169,6 +195,25 @@ export function ProjectStatusControl({
             </SelectContent>
           </Select>
         </div>
+
+        {/* Win Probability row — only for draft / submitted */}
+        {(currentStatus === "draft" || currentStatus === "submitted") && (
+          <div className="flex items-center gap-2 pt-1.5 border-t border-border/40">
+            <span className="text-xs text-muted-foreground whitespace-nowrap">Win Prob:</span>
+            <div className={`h-2 w-2 rounded-full shrink-0 ${probDotClass(winProb)}`} />
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={winProb}
+              onChange={e => setWinProb(Number(e.target.value))}
+              onBlur={handleProbBlur}
+              disabled={savingProb}
+              className="w-14 h-7 rounded border border-border/60 bg-transparent px-2 text-xs text-foreground text-right focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <span className="text-xs text-muted-foreground">%</span>
+          </div>
+        )}
 
         {/* Project Lifecycle Status row — only visible when Won */}
         {currentStatus === "won" && (

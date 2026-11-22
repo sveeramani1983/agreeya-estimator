@@ -1,13 +1,13 @@
 "use client"
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react"
-import { 
-  Sheet, 
-  SheetContent, 
-  SheetHeader, 
-  SheetTitle, 
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
   SheetTrigger,
-  SheetDescription 
+  SheetDescription
 } from "@/components/ui/sheet"
 import {
   GripVertical,
@@ -28,6 +28,7 @@ import {
   Activity,
   MoreHorizontal,
   BarChart2,
+  ExternalLink,
 } from "lucide-react"
 import { v4 as uuidv4 } from "uuid"
 import debounce from "lodash.debounce"
@@ -78,11 +79,10 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 import { WBSComponent, WBSActual, Project } from "@/lib/types"
+import type { CalibrationSuggestion, SimilarProject } from "@/lib/intelligence"
 import { updateWBSComponents, createLibraryComponent } from "@/lib/actions"
 import { AddFromLibraryModal } from "./add-from-library-modal"
 import { useSaveStatus } from "@/components/save-status-context"
-import { ActualsSheet } from "@/components/actuals-sheet"
-
 // ── Constants ──────────────────────────────────────────────
 
 const HRS_PER_SP = 4
@@ -120,11 +120,13 @@ interface WBSWorkspaceProps {
   library: any[]
   project?: Project
   initialActuals?: WBSActual[]
+  calibrationSuggestions?: CalibrationSuggestion[]
+  similarProjects?: SimilarProject[]
 }
 
 // ── Main Component ─────────────────────────────────────────
 
-export function WBSWorkspace({ projectId, initialComponents, library, project, initialActuals = [] }: WBSWorkspaceProps) {
+export function WBSWorkspace({ projectId, initialComponents, library, project, initialActuals = [], calibrationSuggestions = [], similarProjects = [] }: WBSWorkspaceProps) {
   const [components, setComponents] = useState<WBSComponent[]>(initialComponents)
   const { setSaveState } = useSaveStatus()
   const saveCount = useRef(0)
@@ -135,8 +137,22 @@ export function WBSWorkspace({ projectId, initialComponents, library, project, i
   const [searchTerm, setSearchTerm] = useState("")
   const [sortBy, setSortBy] = useState("all")
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
-  const [actualsOpen, setActualsOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [calibrationPopover, setCalibrationPopover] = useState<string | null>(null)
+  const [similarExpanded, setSimilarExpanded] = useState(false)
+
+  // Build calibration lookup: componentName+category → suggestion
+  const calibrationMap = useMemo(() => {
+    const map = new Map<string, CalibrationSuggestion>()
+    for (const s of calibrationSuggestions) {
+      map.set(`${s.componentName.toLowerCase()}|${s.category.toLowerCase()}`, s)
+    }
+    return map
+  }, [calibrationSuggestions])
+
+  function getCalibration(c: WBSComponent): CalibrationSuggestion | undefined {
+    return calibrationMap.get(`${c.component_name.toLowerCase()}|${(c.category || '').toLowerCase()}`)
+  }
 
   const toggleRowExpansion = (id: string) => {
     const next = new Set(expandedRows)
@@ -619,17 +635,6 @@ export function WBSWorkspace({ projectId, initialComponents, library, project, i
                 )}
               </Tooltip>
 
-              {project?.status === 'won' && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5 h-9 px-3 rounded-xl text-green-400 border-green-800 bg-green-900/20 hover:bg-green-900/30"
-                  onClick={() => setActualsOpen(true)}
-                >
-                  <BarChart2 className="h-4 w-4" /> Record Actuals
-                </Button>
-              )}
-
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={<Button variant="outline" size="sm" className="gap-1.5 h-9 px-3 rounded-xl" />}
@@ -760,6 +765,8 @@ export function WBSWorkspace({ projectId, initialComponents, library, project, i
                           updateRow={updateRow}
                           deleteRow={() => setDeleteId(c.id)}
                           saveToLibrary={handleSaveToLibrary}
+                          calibration={getCalibration(c)}
+                          onShowCalibration={() => setCalibrationPopover(c.id)}
                         />
                       </React.Fragment>
                     )
@@ -818,15 +825,137 @@ export function WBSWorkspace({ projectId, initialComponents, library, project, i
           </AlertDialogContent>
         </AlertDialog>
 
-        {project?.status === 'won' && (
-          <ActualsSheet
-            projectId={projectId}
-            components={components}
-            existingActuals={initialActuals}
-            open={actualsOpen}
-            onClose={() => setActualsOpen(false)}
-          />
+        {/* Surface 5: Similar Past Projects */}
+        {similarProjects.length > 0 && (
+          <div className="rounded-lg border border-[#1E2D45] overflow-hidden">
+            <button
+              onClick={() => setSimilarExpanded(e => !e)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-[#0D1526] hover:bg-[#1E2D45]/40 transition-colors text-left"
+            >
+              <div className="flex items-center gap-2">
+                <Search className="h-4 w-4 text-blue-400" />
+                <span className="text-sm font-semibold text-foreground">Similar Past Projects</span>
+                <span className="text-xs text-muted-foreground">({similarProjects.length} found)</span>
+              </div>
+              {similarExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+            </button>
+
+            {similarExpanded && (
+              <div className="p-4 bg-[#111827] space-y-3">
+                {similarProjects.map(sp => (
+                  <div key={sp.projectId} className="flex items-start justify-between gap-4 p-3 rounded-lg border border-[#1E2D45] hover:border-blue-800/40 transition-colors">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-medium text-foreground truncate">{sp.projectName}</span>
+                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold capitalize ${
+                          sp.status === 'won' ? 'bg-green-900/30 text-green-300 border-green-800/50' : 'bg-red-900/30 text-red-300 border-red-800/50'
+                        }`}>
+                          {sp.status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{sp.clientName}</p>
+                      <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
+                        <span>
+                          {sp.quotedPrice > 0
+                            ? `$${sp.quotedPrice >= 1000 ? `${(sp.quotedPrice / 1000).toFixed(0)}K` : Math.round(sp.quotedPrice)}`
+                            : '—'}
+                        </span>
+                        {sp.avgActualsVariance !== null && (
+                          <span className={sp.avgActualsVariance > 0 ? 'text-amber-400' : 'text-green-400'}>
+                            Actuals ran {sp.avgActualsVariance > 0 ? '+' : ''}{Math.round(sp.avgActualsVariance)}% vs estimate
+                          </span>
+                        )}
+                        {sp.avgActualsVariance === null && sp.status === 'lost' && sp.componentCount === 0 && (
+                          <span className="text-red-400/70">Lost on price</span>
+                        )}
+                      </div>
+                    </div>
+                    <a
+                      href={`/projects/${sp.projectId}/estimate`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="shrink-0 p-1.5 text-muted-foreground hover:text-blue-400 transition-colors"
+                      title="Open project"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
+
+        {/* Calibration Popover */}
+        {calibrationPopover && (() => {
+          const comp = components.find(c => c.id === calibrationPopover)
+          if (!comp) return null
+          const cal = getCalibration(comp)
+          if (!cal) return null
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setCalibrationPopover(null)}>
+              <div className="absolute inset-0 bg-black/50" />
+              <div
+                className="relative w-full max-w-sm rounded-xl border border-[#1E2D45] bg-[#0D1526] shadow-2xl p-5 space-y-4"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <BarChart2 className="h-4 w-4 text-blue-400" />
+                    <span className="text-sm font-bold text-foreground">Calibration Data — {cal.componentName}</span>
+                  </div>
+                  <button onClick={() => setCalibrationPopover(null)} className="text-muted-foreground hover:text-foreground">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Your estimate</span>
+                    <span className="font-medium">{cal.currentEstimate} hrs</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Historical avg</span>
+                    <span className="font-semibold text-amber-400">{cal.avgActual} hrs</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Range</span>
+                    <span className="font-medium">{cal.minActual} – {cal.maxActual} hrs</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Sample size</span>
+                    <span className="font-medium">{cal.sampleCount} projects</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Variance</span>
+                    <span className={`font-semibold ${cal.variancePercent > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {cal.variancePercent > 0 ? '+' : ''}{cal.variancePercent}% {cal.direction} estimate
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    onClick={() => {
+                      updateRow(comp.id, { base_hours: cal.suggestedHours })
+                      setCalibrationPopover(null)
+                      toast.success(`Updated to ${cal.suggestedHours} hrs`)
+                    }}
+                    className="flex-1 h-9 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm font-medium text-white transition-colors"
+                  >
+                    Update to {cal.suggestedHours} hrs
+                  </button>
+                  <button
+                    onClick={() => setCalibrationPopover(null)}
+                    className="flex-1 h-9 rounded-lg border border-[#1E2D45] text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Keep {cal.currentEstimate} hrs
+                  </button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
       </div>
     </TooltipProvider>
@@ -876,7 +1005,9 @@ function SortableRow({
   onToggleExpand,
   updateRow,
   deleteRow,
-  saveToLibrary
+  saveToLibrary,
+  calibration,
+  onShowCalibration,
 }: {
   component: WBSComponent
   index: number
@@ -885,6 +1016,8 @@ function SortableRow({
   updateRow: (id: string, updates: any) => void
   deleteRow: () => void
   saveToLibrary: (c: WBSComponent) => void
+  calibration?: CalibrationSuggestion
+  onShowCalibration?: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: c.id })
 
@@ -1007,11 +1140,29 @@ function SortableRow({
         {/* Component Name */}
         <TableCell>
           <div className="flex flex-col gap-1">
-            <input
-              value={c.component_name}
-              onChange={e => updateRow(c.id, { component_name: e.target.value })}
-              className="w-full bg-transparent font-medium border-none focus:ring-0 text-sm p-0 h-auto"
-            />
+            <div className="flex items-center gap-1.5">
+              <input
+                value={c.component_name}
+                onChange={e => updateRow(c.id, { component_name: e.target.value })}
+                className="flex-1 bg-transparent font-medium border-none focus:ring-0 text-sm p-0 h-auto min-w-0"
+              />
+              {calibration && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={onShowCalibration}
+                      className="shrink-0 p-0.5 text-blue-400 hover:text-blue-300 transition-colors"
+                      type="button"
+                    >
+                      <BarChart2 className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[220px] text-center leading-snug text-xs">
+                    Based on {calibration.sampleCount} past projects, this component averages {calibration.avgActual} hrs actual ({calibration.variancePercent > 0 ? '+' : ''}{calibration.variancePercent}% vs estimate).
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               {isSpike && (
                 <span className="flex items-center gap-1 text-[10px] font-bold text-orange-600 uppercase italic">

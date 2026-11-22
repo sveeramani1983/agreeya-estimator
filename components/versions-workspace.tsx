@@ -478,7 +478,7 @@ export function VersionsWorkspace({
           </SheetHeader>
 
           {compareTarget && (
-            <div className="py-5 space-y-6">
+            <div className="py-5 px-4 space-y-6">
               <div className="grid grid-cols-3 gap-3">
                 <div className="rounded-lg border bg-[#0D1526] p-3 text-center">
                   <p className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1">

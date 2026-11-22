@@ -62,6 +62,9 @@
   --text-primary: #F1F5F9;
   --text-secondary: #94A3B8;
   --text-muted: #64748B;
+  --text-warning: #F59E0B;
+  --text-danger: var(--destructive);
+  --bg-input: var(--input);
 
   /* shadcn CSS variable mappings — dark values as default */
   --background: #0A0F1E;
@@ -112,6 +115,9 @@
   --text-primary: #0F172A;
   --text-secondary: #64748B;
   --text-muted: #94A3B8;
+  --text-warning: #D97706;
+  --text-danger: var(--destructive);
+  --bg-input: var(--input);
 
   /* shadcn CSS variable mappings — light values */
   --background: #F4F6F9;
@@ -181,33 +187,66 @@
 }
 
 @media print {
-  .print\:hidden {
-    display: none !important;
-  }
+  /* ── Hide all chrome ── */
+  nav, aside, header, footer,
+  [data-sidebar], [data-no-print],
+  .print\:hidden { display: none !important; }
+
+  /* ── Page setup ── */
+  @page { size: A4 portrait; margin: 20mm 20mm 25mm 20mm; }
+  @page :first { margin: 0; }
+
   body {
-    background-color: white !important;
-    color: black !important;
+    background: white !important;
+    color: #0F172A !important;
+    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
-  main {
-    padding: 0 !important;
+
+  main { padding: 0 !important; overflow: visible !important; }
+
+  /* ── Page break helpers ── */
+  .pdf-page {
+    page-break-after: always;
+    break-after: page;
   }
-  /* Hide sidebar */
-  [data-sidebar] {
-    display: none !important;
+  .pdf-page:last-child {
+    page-break-after: auto;
+    break-after: auto;
   }
-  /* Hide header */
-  header {
-    display: none !important;
+  .no-break { page-break-inside: avoid; break-inside: avoid; }
+
+  /* ── Preserve accent colors (used in PDF cover / headers) ── */
+  .pdf-accent { background: #2563EB !important; color: white !important; }
+  .pdf-accent-sm { background: #2563EB !important; }
+
+  /* ── Table defaults ── */
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    background: #F8FAFC !important;
+    font-weight: 600;
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 10pt;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #64748B !important;
+    border-bottom: 2px solid #E2E8F0 !important;
   }
-  .print-page {
-    margin: 0;
-    padding: 20px;
-    box-shadow: none !important;
-    border: none !important;
+  td {
+    padding: 8px 12px;
+    font-size: 11pt;
+    border-bottom: 1px solid #F1F5F9 !important;
+    vertical-align: top;
+    color: #0F172A !important;
   }
-  /* Avoid page breaks inside sections */
-  section {
-    page-break-inside: avoid;
+  tr.total-row td {
+    font-weight: 700;
+    border-top: 2px solid #0F172A !important;
+    border-bottom: none !important;
   }
 }
 
@@ -253,19 +292,6 @@
   input::placeholder,
   textarea::placeholder {
     color: #94A3B8;
-  }
-
-  /* Scrollbar for light mode */
-  ::-webkit-scrollbar-track {
-    background: #F1F5F9;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: #CBD5E1;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: #94A3B8;
   }
 
   /* Section headers inside cards */
@@ -315,4 +341,110 @@
     background-color: #FEE2E2;
     color: #7F1D1D;
   }
+}
+
+/* ── Light mode: intercept hardcoded dark utility classes ─────────────────
+   Specificity: [attr] + .class = 0,1,1 > plain .class = 0,0,1
+   No !important needed — higher specificity + later cascade wins.         */
+
+/* Backgrounds */
+[data-theme="light"] .bg-\[\#111827\] { background-color: var(--card); }
+[data-theme="light"] .bg-\[\#0D1526\] { background-color: var(--secondary); }
+[data-theme="light"] .bg-\[\#0A0F1E\] { background-color: var(--background); }
+[data-theme="light"] .bg-\[\#1E2D45\] { background-color: var(--muted); }
+[data-theme="light"] .bg-\[\#162032\] { background-color: var(--accent); }
+[data-theme="light"] .bg-\[\#0F1922\] { background-color: var(--muted); }
+
+/* Borders */
+[data-theme="light"] .border-\[\#1E2D45\] { border-color: var(--border); }
+
+/* Text */
+[data-theme="light"] .text-\[\#94A3B8\] { color: var(--muted-foreground); }
+[data-theme="light"] .text-\[\#F1F5F9\] { color: var(--foreground); }
+
+/* Hover variants */
+[data-theme="light"] .hover\:bg-\[\#1E2D45\]:hover { background-color: var(--muted); }
+[data-theme="light"] .hover\:bg-\[\#162032\]:hover  { background-color: var(--accent); }
+[data-theme="light"] .hover\:bg-\[\#111827\]:hover  { background-color: var(--card); }
+
+/* Opacity variants of bg-[#1E2D45] — light muted (#E2E8F0 = rgb 226,232,240) */
+[data-theme="light"] .bg-\[\#1E2D45\]\/10 { background-color: rgba(226,232,240,0.10); }
+[data-theme="light"] .bg-\[\#1E2D45\]\/20 { background-color: rgba(226,232,240,0.20); }
+[data-theme="light"] .bg-\[\#1E2D45\]\/30 { background-color: rgba(226,232,240,0.30); }
+[data-theme="light"] .bg-\[\#1E2D45\]\/40 { background-color: rgba(226,232,240,0.40); }
+[data-theme="light"] .bg-\[\#1E2D45\]\/50 { background-color: rgba(226,232,240,0.50); }
+[data-theme="light"] .bg-\[\#1E2D45\]\/60 { background-color: rgba(226,232,240,0.60); }
+[data-theme="light"] .bg-\[\#1E2D45\]\/70 { background-color: rgba(226,232,240,0.70); }
+
+/* Scrollbar */
+[data-theme="light"] ::-webkit-scrollbar-track { background: #F1F5F9; }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: #CBD5E1; }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+
+/* Opacity variants of bg-[#0D1526] — light secondary (rgb 241,245,249) */
+[data-theme="light"] .bg-\[\#0D1526\]\/50 { background-color: rgba(241,245,249,0.50); }
+[data-theme="light"] .bg-\[\#0D1526\]\/95 { background-color: rgba(241,245,249,0.95); }
+
+/* Opacity variants of bg-[#111827] — light card (rgb 255,255,255) */
+[data-theme="light"] .bg-\[\#111827\]\/50 { background-color: rgba(255,255,255,0.60); }
+
+/* Additional bg-[#1E2D45] opacity variants */
+[data-theme="light"] .bg-\[\#1E2D45\]\/80 { background-color: rgba(226,232,240,0.80); }
+
+/* Hover variant */
+[data-theme="light"] .hover\:bg-\[\#1E2D45\]\/80:hover { background-color: rgba(226,232,240,0.80); }
+
+/* Tailwind blue/purple tints are too light on light backgrounds — remap to dark variants */
+[data-theme="light"] .text-blue-300   { color: #1d4ed8; }
+[data-theme="light"] .text-blue-400   { color: #2563eb; }
+[data-theme="light"] .text-purple-300 { color: #7e22ce; }
+
+/* Blue/purple/emerald bg washes — dark saturated → light pastel tints */
+[data-theme="light"] .bg-blue-900\/10     { background-color: rgba(219,234,254,0.60); }
+[data-theme="light"] .bg-blue-900\/20     { background-color: #dbeafe; }
+[data-theme="light"] .bg-purple-900\/10   { background-color: rgba(237,233,254,0.60); }
+[data-theme="light"] .bg-purple-900\/20   { background-color: #ede9fe; }
+[data-theme="light"] .bg-emerald-900\/20  { background-color: #d1fae5; }
+
+/* Emerald text — too pale on light backgrounds */
+[data-theme="light"] .text-emerald-300 { color: #047857; }
+
+/* Coloured bg washes at /20 and /30 — dark saturated → light pastel */
+[data-theme="light"] .bg-green-900\/20   { background-color: #dcfce7; }
+[data-theme="light"] .bg-green-900\/30   { background-color: #bbf7d0; }
+[data-theme="light"] .bg-amber-900\/20   { background-color: #fef3c7; }
+[data-theme="light"] .bg-red-900\/20     { background-color: #fee2e2; }
+[data-theme="light"] .bg-red-900\/30     { background-color: #fecaca; }
+[data-theme="light"] .bg-orange-900\/20  { background-color: #ffedd5; }
+[data-theme="light"] .bg-orange-900\/30  { background-color: #fed7aa; }
+[data-theme="light"] .bg-yellow-900\/30  { background-color: #fef3c7; }
+
+/* Coloured text — pale tints are invisible on light backgrounds.
+   Amber/orange values use -900 shades to hit ≥7.5:1 on their -100 bg tints. */
+[data-theme="light"] .text-green-200  { color: #166534; }
+[data-theme="light"] .text-green-300  { color: #166534; }
+[data-theme="light"] .text-green-400  { color: #15803d; }
+[data-theme="light"] .text-amber-300  { color: #78350f; } /* amber-900 → 7.8:1 on amber-100 */
+[data-theme="light"] .text-amber-400  { color: #78350f; } /* amber-900 → 7.8:1 on amber-100 */
+[data-theme="light"] .text-red-300    { color: #b91c1c; }
+[data-theme="light"] .text-red-400    { color: #b91c1c; }
+[data-theme="light"] .text-orange-200 { color: #7c2d12; } /* orange-900 → 8:1 on orange-100 */
+[data-theme="light"] .text-orange-300 { color: #7c2d12; } /* orange-900 → 8:1 on orange-100 */
+[data-theme="light"] .text-orange-400 { color: #7c2d12; } /* orange-900 → 8:1 on orange-100 */
+[data-theme="light"] .text-yellow-300 { color: #92400e; }
+
+/* Coloured borders on light backgrounds */
+[data-theme="light"] .border-green-800    { border-color: #166534; }
+[data-theme="light"] .border-red-800      { border-color: #991b1b; }
+[data-theme="light"] .border-green-800\/50  { border-color: rgba(22,101,52,0.40); }
+[data-theme="light"] .border-orange-500     { border-color: #ea580c; }
+[data-theme="light"] .border-orange-800\/50 { border-color: rgba(154,52,18,0.40); }
+[data-theme="light"] .border-amber-800\/50  { border-color: rgba(120,53,15,0.40); }
+
+/* Gantt print / export */
+@media print {
+  #gantt-chart-export { background: white !important; overflow: visible !important; }
+  #gantt-chart-export text { fill: #000000 !important; }
+  #gantt-chart-export line,
+  #gantt-chart-export rect.grid-line { stroke: #E5E7EB !important; }
 }

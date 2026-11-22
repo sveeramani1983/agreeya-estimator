@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { 
   MoreHorizontal, 
   Edit, 
@@ -181,7 +182,19 @@ export function ProjectsTable({ initialProjects }: ProjectsTableProps) {
                 return (
                 <TableRow key={project.id} className="cursor-pointer hover:bg-[#1E2D45]/50 transition-colors" onClick={() => router.push(`/projects/${project.id}/summary`)}>
                   <TableCell className="font-medium">{project.name}</TableCell>
-                  <TableCell>{project.client_name}</TableCell>
+                  <TableCell>
+                    {project.client_id ? (
+                      <Link
+                        href={`/clients/${project.client_id}`}
+                        onClick={e => e.stopPropagation()}
+                        className="hover:text-primary transition-colors hover:underline underline-offset-2"
+                      >
+                        {project.client_name}
+                      </Link>
+                    ) : (
+                      project.client_name
+                    )}
+                  </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={statusColors[project.status]}>
                       {project.status.charAt(0).toUpperCase() + project.status.slice(1)}

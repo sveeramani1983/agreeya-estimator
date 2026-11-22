@@ -11,6 +11,7 @@ import {
   getProjectPhases,
   getBurnRateData,
   getWBSActuals,
+  getBillingMilestones,
 } from "@/lib/actions"
 import { WBSComponentWithActual } from "@/lib/types"
 import { ProjectSummary } from "@/components/project-summary"
@@ -34,6 +35,7 @@ export default async function SummaryPage({ params }: PageProps) {
     phases,
     burnRateData,
     actuals,
+    billingMilestones,
   ] = await Promise.all([
     getProject(id),
     getWBSComponents(id),
@@ -46,6 +48,7 @@ export default async function SummaryPage({ params }: PageProps) {
     getProjectPhases(id),
     getBurnRateData(id),
     getWBSActuals(id),
+    getBillingMilestones(id),
   ])
 
   if (!project) {
@@ -100,6 +103,7 @@ export default async function SummaryPage({ params }: PageProps) {
         risks={risks}
         phases={phases}
         burnRateData={burnRateData}
+        billingMilestones={billingMilestones}
       />
     </div>
   )

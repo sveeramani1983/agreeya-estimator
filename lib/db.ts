@@ -179,6 +179,154 @@ export function getDb() {
           )
         `);
 
+        // Project Tracker sub-application tables
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS tracker_projects (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL UNIQUE,
+            baseline_snapshot TEXT NOT NULL,
+            baseline_total_cost REAL,
+            baseline_total_hours REAL,
+            kicked_off_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            notes TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS project_actuals (
+            id TEXT PRIMARY KEY,
+            tracker_project_id TEXT NOT NULL,
+            period_label TEXT NOT NULL,
+            actual_cost REAL NOT NULL DEFAULT 0,
+            notes TEXT,
+            recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tracker_project_id, period_label),
+            FOREIGN KEY (tracker_project_id) REFERENCES tracker_projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS health_snapshots (
+            id TEXT PRIMARY KEY,
+            tracker_project_id TEXT NOT NULL,
+            snapshot_date TEXT NOT NULL,
+            percent_complete REAL,
+            schedule_status TEXT DEFAULT 'on_track',
+            budget_status TEXT DEFAULT 'on_track',
+            scope_status TEXT DEFAULT 'on_track',
+            notes TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tracker_project_id) REFERENCES tracker_projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS status_reports (
+            id TEXT PRIMARY KEY,
+            tracker_project_id TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            content TEXT NOT NULL,
+            generated_by TEXT DEFAULT 'manual',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tracker_project_id) REFERENCES tracker_projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS change_requests (
+            id TEXT PRIMARY KEY,
+            tracker_project_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            requested_by TEXT,
+            status TEXT DEFAULT 'open',
+            impact_hours REAL,
+            impact_cost REAL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tracker_project_id) REFERENCES tracker_projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        // Period-based burn entry (replaces project_actuals for new projects)
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS period_burns (
+            id TEXT PRIMARY KEY,
+            tracker_project_id TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            period_label TEXT NOT NULL,
+            total_hours REAL NOT NULL DEFAULT 0,
+            resource_breakdown TEXT,
+            notes TEXT,
+            is_submitted INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tracker_project_id, period_start),
+            FOREIGN KEY (tracker_project_id) REFERENCES tracker_projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        // Billing milestones for payment schedule tracking
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS billing_milestones (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            tracker_project_id TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            deliverables TEXT,
+            percentage REAL NOT NULL DEFAULT 0,
+            amount REAL NOT NULL DEFAULT 0,
+            planned_date TEXT,
+            actual_date TEXT,
+            invoice_number TEXT,
+            invoice_status TEXT CHECK(invoice_status IN (
+              'not_invoiced','invoiced','paid','overdue'
+            )) DEFAULT 'not_invoiced',
+            payment_terms INTEGER DEFAULT 30,
+            trigger_type TEXT CHECK(trigger_type IN (
+              'date','milestone','phase_complete','client_approval','contract_signing'
+            )) DEFAULT 'milestone',
+            sort_order INTEGER DEFAULT 0,
+            notes TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS milestone_templates (
+            id TEXT PRIMARY KEY,
+            template_name TEXT NOT NULL UNIQUE,
+            milestones_json TEXT NOT NULL
+          )
+        `);
+
+        // Component-level actuals (one record per component per project, upserted)
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS component_actuals (
+            id TEXT PRIMARY KEY,
+            tracker_project_id TEXT NOT NULL,
+            wbs_component_id TEXT NOT NULL,
+            actual_hours REAL NOT NULL DEFAULT 0,
+            is_complete INTEGER DEFAULT 0,
+            as_of_date TEXT NOT NULL,
+            notes TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tracker_project_id, wbs_component_id),
+            FOREIGN KEY (tracker_project_id) REFERENCES tracker_projects(id) ON DELETE CASCADE
+          )
+        `);
+
+        // Billing milestone date tracking columns
+        try { db.exec("ALTER TABLE billing_milestones ADD COLUMN revised_date TEXT"); } catch (_) {}
+        try { db.exec("ALTER TABLE billing_milestones ADD COLUMN milestone_notes TEXT"); } catch (_) {}
+
+        // Reporting cadence per tracker project
+        try { db.exec("ALTER TABLE tracker_projects ADD COLUMN reporting_cadence TEXT DEFAULT 'weekly'"); } catch (_) {}
+
         // Rate card onsite / offshore rates
         for (const sql of [
             "ALTER TABLE rate_card ADD COLUMN onsite_rate REAL",
@@ -196,6 +344,101 @@ export function getDb() {
         ];
         for (const sql of lifecycleMigrations) {
             try { db.exec(sql); } catch (_) {}
+        }
+
+        // Pipeline pursuit tracking columns
+        const pipelineMigrations = [
+            "ALTER TABLE projects ADD COLUMN win_probability INTEGER DEFAULT 50",
+            "ALTER TABLE projects ADD COLUMN deal_size_category TEXT",
+            "ALTER TABLE projects ADD COLUMN expected_start_date TEXT",
+            "ALTER TABLE projects ADD COLUMN pursuit_owner TEXT",
+            "ALTER TABLE projects ADD COLUMN vertical TEXT",
+            "ALTER TABLE projects ADD COLUMN service_line TEXT",
+        ];
+        for (const sql of pipelineMigrations) {
+            try { db.exec(sql); } catch (_) {}
+        }
+
+        // Win probability rules lookup table
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS win_probability_rules (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL UNIQUE,
+                default_probability INTEGER NOT NULL,
+                description TEXT
+            )
+        `);
+        const wpInsert = db.prepare(
+            "INSERT INTO win_probability_rules (id, status, default_probability, description) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM win_probability_rules WHERE status=?)"
+        );
+        for (const [status, prob, desc] of [
+            ['draft',     25,  'Early stage — requirements unclear'],
+            ['submitted', 50,  'Proposal submitted — awaiting decision'],
+            ['won',       100, 'Deal closed'],
+            ['lost',      0,   'Deal lost'],
+        ] as [string, number, string][]) {
+            try { wpInsert.run(uuidv4(), status, prob, desc, status); } catch (_) {}
+        }
+
+        // Client Master List tables
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS clients (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                industry TEXT,
+                website TEXT,
+                address TEXT,
+                city TEXT,
+                state TEXT,
+                country TEXT DEFAULT 'USA',
+                phone TEXT,
+                email TEXT,
+                notes TEXT,
+                is_archived INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS client_contacts (
+                id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                title TEXT,
+                email TEXT,
+                phone TEXT,
+                is_primary INTEGER DEFAULT 0,
+                notes TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+            )
+        `);
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS client_notes (
+                id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT DEFAULT 'general',
+                created_by TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+            )
+        `);
+
+        // Link projects to clients
+        try { db.exec("ALTER TABLE projects ADD COLUMN client_id TEXT REFERENCES clients(id)"); } catch (_) {}
+
+        // Seed clients from existing project client_names (idempotent)
+        const unlinkedClients = db.prepare(
+            "SELECT DISTINCT client_name FROM projects WHERE client_id IS NULL AND client_name IS NOT NULL AND client_name != ''"
+        ).all() as { client_name: string }[];
+        for (const { client_name } of unlinkedClients) {
+            const existing = db.prepare("SELECT id FROM clients WHERE name = ?").get(client_name) as { id: string } | undefined;
+            const clientId = existing?.id ?? uuidv4();
+            if (!existing) {
+                db.prepare("INSERT INTO clients (id, name) VALUES (?, ?)").run(clientId, client_name);
+            }
+            db.prepare("UPDATE projects SET client_id = ? WHERE client_name = ? AND client_id IS NULL").run(clientId, client_name);
         }
 
         // Seed if empty
@@ -387,6 +630,36 @@ function seedDatabase(db: Database.Database) {
         db.transaction((items: typeof PHASE_TEMPLATES_SEED) => {
             for (const t of items) insertTpl.run(t.id, t.template_name, t.engagement_type, t.phases_json, t.is_default);
         })(PHASE_TEMPLATES_SEED);
+    }
+
+    const milestoneTemplateCount = db.prepare('SELECT COUNT(*) as count FROM milestone_templates').get() as { count: number };
+    if (milestoneTemplateCount.count === 0) {
+        const insertMT = db.prepare('INSERT INTO milestone_templates (id, template_name, milestones_json) VALUES (?, ?, ?)');
+        const MILESTONE_TEMPLATES = [
+            { name: 'Fixed Price — Equal Installments', json: JSON.stringify([
+                { title: 'Contract Signing',    percentage: 20, trigger_type: 'contract_signing' },
+                { title: 'Midpoint Delivery',   percentage: 30, trigger_type: 'milestone'        },
+                { title: 'UAT Acceptance',      percentage: 30, trigger_type: 'client_approval'  },
+                { title: 'Go-Live',             percentage: 15, trigger_type: 'phase_complete'   },
+                { title: 'Warranty Period End', percentage:  5, trigger_type: 'date'             },
+            ])},
+            { name: 'Fixed Price — Delivery Based', json: JSON.stringify([
+                { title: 'Project Kickoff',  percentage: 10, trigger_type: 'date',            percentage_offset: 0 },
+                { title: 'Phase 1 Complete', percentage: 25, trigger_type: 'phase_complete'                        },
+                { title: 'Phase 2 Complete', percentage: 25, trigger_type: 'phase_complete'                        },
+                { title: 'UAT Sign-off',     percentage: 25, trigger_type: 'client_approval'                       },
+                { title: 'Project Close',    percentage: 15, trigger_type: 'phase_complete'                        },
+            ])},
+            { name: 'T&M Monthly',  json: '[]' },
+            { name: '50/50 Split',  json: JSON.stringify([
+                { title: 'Project Start',    percentage: 50, trigger_type: 'contract_signing' },
+                { title: 'Project Complete', percentage: 50, trigger_type: 'phase_complete'   },
+            ])},
+            { name: 'Custom', json: '[]' },
+        ];
+        db.transaction((items: typeof MILESTONE_TEMPLATES) => {
+            for (const t of items) insertMT.run(uuidv4(), t.name, t.json);
+        })(MILESTONE_TEMPLATES);
     }
 }
 

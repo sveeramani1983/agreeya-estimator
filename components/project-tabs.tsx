@@ -1,8 +1,9 @@
 "use client"
 
-import { usePathname, useRouter } from "next/navigation"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Calculator, Users, Settings, DollarSign, FileText, History, ShieldAlert } from "lucide-react"
+import Link from "next/link"
+import { usePathname } from "next/navigation"
+import { Calculator, Users, Settings, DollarSign, FileText, History, ShieldAlert, Calendar } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 interface ProjectTabsProps {
   projectId: string
@@ -11,54 +12,55 @@ interface ProjectTabsProps {
 
 export function ProjectTabs({ projectId, riskCount }: ProjectTabsProps) {
   const pathname = usePathname()
-  const router = useRouter()
-
   const segments = pathname.split("/")
   const currentTab = segments[segments.length - 1] || "estimate"
 
-  const handleTabChange = (value: string) => {
-    router.push(`/projects/${projectId}/${value}`)
-  }
-
-  const triggerCls = "gap-2 px-4 py-1.5 data-[state=active]:bg-[#111827] data-[state=active]:text-white data-[state=active]:shadow-sm transition-all text-[#94A3B8] hover:text-white"
+  const tabs = [
+    { value: "estimate",    label: "Estimate",    Icon: Calculator                   },
+    { value: "overhead",    label: "Overhead",    Icon: Settings                     },
+    { value: "resources",   label: "Resources",   Icon: Users                        },
+    { value: "schedule",    label: "Schedule",    Icon: Calendar                     },
+    { value: "commercials", label: "Commercials", Icon: DollarSign                   },
+    { value: "risks",       label: "Risks",       Icon: ShieldAlert, badge: riskCount },
+    { value: "summary",     label: "Summary",     Icon: FileText                     },
+    { value: "versions",    label: "Versions",    Icon: History                      },
+  ]
 
   return (
-    <Tabs value={currentTab} onValueChange={handleTabChange} className="w-auto print:hidden">
-      <TabsList className="bg-[#0D1526] border border-[#1E2D45] p-1 rounded-lg">
-        <TabsTrigger value="estimate" className={triggerCls}>
-          <Calculator className="h-4 w-4" />
-          <span className="font-semibold">Estimate</span>
-        </TabsTrigger>
-        <TabsTrigger value="overhead" className={triggerCls}>
-          <Settings className="h-4 w-4" />
-          <span className="font-semibold">Overhead</span>
-        </TabsTrigger>
-        <TabsTrigger value="resources" className={triggerCls}>
-          <Users className="h-4 w-4" />
-          <span className="font-semibold">Resources</span>
-        </TabsTrigger>
-        <TabsTrigger value="commercials" className={triggerCls}>
-          <DollarSign className="h-4 w-4" />
-          <span className="font-semibold">Commercials</span>
-        </TabsTrigger>
-        <TabsTrigger value="risks" className={triggerCls}>
-          <ShieldAlert className="h-4 w-4" />
-          <span className="font-semibold">Risks</span>
-          {riskCount != null && riskCount > 0 && (
-            <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white leading-none">
-              {riskCount}
-            </span>
-          )}
-        </TabsTrigger>
-        <TabsTrigger value="summary" className={triggerCls}>
-          <FileText className="h-4 w-4" />
-          <span className="font-semibold">Summary</span>
-        </TabsTrigger>
-        <TabsTrigger value="versions" className={triggerCls}>
-          <History className="h-4 w-4" />
-          <span className="font-semibold">Versions</span>
-        </TabsTrigger>
-      </TabsList>
-    </Tabs>
+    <nav className="flex items-end gap-0.5 print:hidden" aria-label="Project navigation">
+      {tabs.map(({ value, label, Icon, badge }) => {
+        const isActive = currentTab === value
+        return (
+          <Link
+            key={value}
+            href={`/projects/${projectId}/${value}`}
+            className={cn(
+              // Layout & shape
+              "relative flex items-center gap-2 px-4 py-2.5 text-sm rounded-t-md",
+              // Behaviour
+              "select-none transition-colors duration-150",
+              "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-1 focus-visible:rounded-md",
+              // Bottom indicator via pseudo-element (overlaps parent border-b)
+              "after:absolute after:bottom-0 after:inset-x-3 after:h-[2px] after:rounded-full after:transition-colors after:duration-200",
+              isActive
+                ? // ── Active ─────────────────────────────────────────────
+                  "text-primary font-semibold cursor-default after:bg-primary"
+                : // ── Default + Hover ─────────────────────────────────────
+                  "text-muted-foreground font-medium cursor-pointer after:bg-transparent " +
+                  "hover:text-foreground hover:bg-muted/50 hover:after:bg-muted"
+            )}
+            aria-current={isActive ? "page" : undefined}
+          >
+            <Icon className="h-4 w-4 shrink-0" />
+            <span>{label}</span>
+            {badge != null && badge > 0 && (
+              <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white leading-none">
+                {badge}
+              </span>
+            )}
+          </Link>
+        )
+      })}
+    </nav>
   )
 }

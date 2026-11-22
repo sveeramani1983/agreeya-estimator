@@ -3,7 +3,7 @@
 import { getDb } from "@/lib/db";
 import { v4 as uuidv4 } from "uuid";
 import { revalidatePath } from "next/cache";
-import { Project, ProjectStatus, WBSComponent, OverheadConfig, CustomOverhead, Resource, ResourceLoading, RateCardItem, AdditionalCost, CommercialsConfig, EstimateVersion, Assumption, Phase, PhaseTemplate, CoverageWarning, ResourceGanttData, WBSActual, PeriodCost } from "./types";
+import { Project, ProjectStatus, WBSComponent, OverheadConfig, CustomOverhead, Resource, ResourceLoading, RateCardItem, AdditionalCost, CommercialsConfig, EstimateVersion, Assumption, Phase, PhaseTemplate, CoverageWarning, ResourceGanttData, WBSActual, PeriodCost, TrackerProject, TrackerProjectRow, ProjectActual, HealthSnapshot, StatusReport, ChangeRequest, PeriodBurn, PeriodBurnResourceEntry, ReportingCadence, BillingMilestone, MilestoneTemplate, InvoiceStatus, PipelineProject, MonthlyForecast, PipelineData, Client, ClientContact, ClientNote } from "./types";
 
 export async function getProjects() {
   try {
@@ -58,6 +58,7 @@ export async function getProject(id: string) {
 export async function createProject(data: {
   name: string;
   client_name: string;
+  client_id?: string | null;
   description?: string;
   status?: ProjectStatus;
 }) {
@@ -65,11 +66,21 @@ export async function createProject(data: {
     const db = getDb();
     const id = uuidv4();
     const status = data.status || "draft";
-    
+
+    // Auto-create a client record if a free-text name is given but no client_id
+    let clientId = data.client_id ?? null;
+    if (!clientId && data.client_name.trim()) {
+      const existing = db.prepare("SELECT id FROM clients WHERE name = ?").get(data.client_name.trim()) as { id: string } | undefined;
+      clientId = existing?.id ?? uuidv4();
+      if (!existing) {
+        db.prepare("INSERT INTO clients (id, name) VALUES (?, ?)").run(clientId, data.client_name.trim());
+      }
+    }
+
     db.prepare(`
-      INSERT INTO projects (id, name, client_name, description, status)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, data.name, data.client_name, data.description || null, status);
+      INSERT INTO projects (id, name, client_name, client_id, description, status)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, data.name, data.client_name, clientId, data.description || null, status);
     
     // Initialize default overhead config
     db.prepare(`
@@ -105,9 +116,16 @@ export async function updateProject(id: string, updates: Partial<Project>) {
     if (updates.tax_percent !== undefined) { setClauses.push("tax_percent = ?"); values.push(updates.tax_percent); }
     if (updates.tax_mode !== undefined) { setClauses.push("tax_mode = ?"); values.push(updates.tax_mode); }
     if (updates.loading_period_type !== undefined) { setClauses.push("loading_period_type = ?"); values.push(updates.loading_period_type); }
+    if (updates.client_id !== undefined) { setClauses.push("client_id = ?"); values.push(updates.client_id); }
     if (updates.project_status !== undefined) { setClauses.push("project_status = ?"); values.push(updates.project_status); }
     if (updates.project_start_date !== undefined) { setClauses.push("project_start_date = ?"); values.push(updates.project_start_date); }
     if (updates.project_target_end_date !== undefined) { setClauses.push("project_target_end_date = ?"); values.push(updates.project_target_end_date); }
+    if (updates.win_probability !== undefined) { setClauses.push("win_probability = ?"); values.push(updates.win_probability); }
+    if (updates.deal_size_category !== undefined) { setClauses.push("deal_size_category = ?"); values.push(updates.deal_size_category); }
+    if (updates.expected_start_date !== undefined) { setClauses.push("expected_start_date = ?"); values.push(updates.expected_start_date); }
+    if (updates.pursuit_owner !== undefined) { setClauses.push("pursuit_owner = ?"); values.push(updates.pursuit_owner); }
+    if (updates.vertical !== undefined) { setClauses.push("vertical = ?"); values.push(updates.vertical); }
+    if (updates.service_line !== undefined) { setClauses.push("service_line = ?"); values.push(updates.service_line); }
 
     if (setClauses.length > 0) {
       values.push(id);
@@ -1194,6 +1212,19 @@ export async function getAssumptionCounts(projectId: string) {
 
 // ── Win / Loss Tracking ───────────────────────────────────────────────────────
 
+async function buildBaselineSnapshot(projectId: string) {
+  const db = getDb();
+  const wbsComponents = db.prepare("SELECT * FROM wbs_components WHERE project_id = ?").all(projectId);
+  const overheadConfig = db.prepare("SELECT * FROM overhead_config WHERE project_id = ?").get(projectId);
+  const resources = db.prepare("SELECT * FROM resources WHERE project_id = ?").all(projectId);
+  const resourceLoading = db.prepare("SELECT rl.* FROM resource_loading rl JOIN resources r ON rl.resource_id = r.id WHERE r.project_id = ?").all(projectId);
+  const additionalCosts = db.prepare("SELECT * FROM additional_costs WHERE project_id = ?").all(projectId);
+  const commercialsConfig = db.prepare("SELECT * FROM commercials_config WHERE project_id = ?").get(projectId);
+  const totalHoursResult = db.prepare("SELECT COALESCE(SUM(base_hours),0) as total FROM wbs_components WHERE project_id = ?").get(projectId) as { total: number };
+  const totalCost = await getProjectTotalCost(projectId);
+  return { wbsComponents, overheadConfig, resources, resourceLoading, additionalCosts, commercialsConfig, totalCost, totalHours: totalHoursResult.total, quotedPrice: totalCost, capturedAt: new Date().toISOString() };
+}
+
 export async function updateProjectOutcome(projectId: string, status: ProjectStatus, outcomeData: Record<string, unknown> | null) {
   try {
     const db = getDb();
@@ -1203,6 +1234,27 @@ export async function updateProjectOutcome(projectId: string, status: ProjectSta
     if (status === 'submitted' || status === 'won' || status === 'lost') {
       const label = status === 'submitted' ? 'Auto-save: Submitted' : status === 'won' ? 'Auto-save: Won' : 'Auto-save: Lost';
       try { await createEstimateVersion(projectId, label, null); } catch {}
+    }
+    // Auto-create tracker_projects record when won
+    if (status === 'won') {
+      const existing = db.prepare("SELECT id FROM tracker_projects WHERE project_id = ?").get(projectId) as any;
+      if (!existing) {
+        try {
+          const snapshot = await buildBaselineSnapshot(projectId);
+          db.prepare("INSERT INTO tracker_projects (id, project_id, baseline_snapshot, baseline_total_cost, baseline_total_hours) VALUES (?, ?, ?, ?, ?)")
+            .run(uuidv4(), projectId, JSON.stringify(snapshot), snapshot.totalCost, snapshot.totalHours);
+        } catch (e) { console.warn("Failed to create tracker project:", e); }
+      }
+      // Link billing milestones to the tracker record
+      try {
+        const tp = db.prepare("SELECT id FROM tracker_projects WHERE project_id = ?").get(projectId) as any;
+        if (tp) {
+          db.prepare("UPDATE billing_milestones SET tracker_project_id = ? WHERE project_id = ? AND tracker_project_id IS NULL")
+            .run(tp.id, projectId);
+        }
+      } catch {}
+      revalidatePath("/tracker");
+      revalidatePath("/tracker/projects");
     }
     revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}`);
@@ -1604,4 +1656,1000 @@ export async function upsertWBSActuals(
     console.error("Failed to upsert WBS actuals:", error);
     throw error;
   }
+}
+
+// ── Project Tracker ───────────────────────────────────────────────────────────
+
+export async function getTrackerProject(projectId: string): Promise<TrackerProject | null> {
+  try {
+    const db = getDb();
+    return db.prepare("SELECT * FROM tracker_projects WHERE project_id = ?").get(projectId) as TrackerProject | null;
+  } catch { return null; }
+}
+
+export async function getTrackerProjects(): Promise<TrackerProjectRow[]> {
+  try {
+    const db = getDb();
+    return db.prepare(`
+      SELECT tp.*, p.name as project_name, p.client_name, p.project_status,
+             p.project_start_date, p.project_target_end_date
+      FROM tracker_projects tp
+      JOIN projects p ON tp.project_id = p.id
+      ORDER BY tp.kicked_off_at DESC
+    `).all() as TrackerProjectRow[];
+  } catch { return []; }
+}
+
+export async function getTrackerDashboardData() {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT tp.*, p.name as project_name, p.client_name, p.project_status,
+             p.project_start_date, p.project_target_end_date
+      FROM tracker_projects tp
+      JOIN projects p ON tp.project_id = p.id
+      ORDER BY tp.kicked_off_at DESC
+    `).all() as any[];
+
+    const burnRows = db.prepare(`
+      SELECT tracker_project_id, COALESCE(SUM(total_hours), 0) as total_hours
+      FROM period_burns WHERE is_submitted = 1 GROUP BY tracker_project_id
+    `).all() as any[];
+    const burnMap: Record<string, number> = {};
+    for (const b of burnRows) burnMap[b.tracker_project_id] = b.total_hours;
+
+    // Billing alert counts per project
+    const billingRows = db.prepare(`
+      SELECT
+        project_id,
+        SUM(CASE WHEN
+          invoice_status NOT IN ('invoiced','paid') AND
+          planned_date IS NOT NULL AND
+          (revised_date IS NULL AND planned_date < date('now')) OR
+          (revised_date IS NOT NULL AND revised_date < date('now'))
+        THEN 1 ELSE 0 END) as overdue_count,
+        SUM(CASE WHEN
+          invoice_status NOT IN ('invoiced','paid') AND
+          planned_date IS NOT NULL AND
+          (revised_date IS NULL AND planned_date >= date('now') AND julianday(planned_date) - julianday('now') <= 7) OR
+          (revised_date IS NOT NULL AND revised_date >= date('now') AND julianday(revised_date) - julianday('now') <= 7)
+        THEN 1 ELSE 0 END) as at_risk_count
+      FROM billing_milestones
+      GROUP BY project_id
+    `).all() as any[];
+    const billingMap: Record<string, { overdue: number; at_risk: number }> = {};
+    for (const b of billingRows) billingMap[b.project_id] = { overdue: b.overdue_count ?? 0, at_risk: b.at_risk_count ?? 0 };
+
+    const projects = rows.map(row => {
+      const totalHours = burnMap[row.id] || 0;
+      const blendedRate = (row.baseline_total_hours || 0) > 0
+        ? (row.baseline_total_cost || 0) / row.baseline_total_hours : 0;
+      const totalActualCost = totalHours * blendedRate;
+      const billing = billingMap[row.project_id] ?? { overdue: 0, at_risk: 0 };
+      return {
+        ...row,
+        total_actual_cost: totalActualCost,
+        budget_pct: (row.baseline_total_cost || 0) > 0
+          ? (totalActualCost / row.baseline_total_cost) * 100 : 0,
+        billing_overdue: billing.overdue,
+        billing_at_risk: billing.at_risk,
+      };
+    });
+
+    return {
+      total: projects.length,
+      active: projects.filter(p => p.project_status === 'in_progress').length,
+      onHold: projects.filter(p => p.project_status === 'on_hold').length,
+      completed: projects.filter(p => p.project_status === 'completed').length,
+      notStarted: projects.filter(p => !p.project_status || p.project_status === 'not_started').length,
+      atRisk: projects.filter(p => p.budget_pct > 85).length,
+      totalPortfolioValue: projects.reduce((s, p) => s + (p.baseline_total_cost || 0), 0),
+      totalActualSpend: projects.reduce((s, p) => s + p.total_actual_cost, 0),
+      projects,
+    };
+  } catch {
+    return { total: 0, active: 0, onHold: 0, completed: 0, notStarted: 0, atRisk: 0, totalPortfolioValue: 0, totalActualSpend: 0, projects: [] };
+  }
+}
+
+export async function upsertProjectActual(
+  trackerProjectId: string,
+  actual: { period_label: string; actual_cost: number; notes?: string }
+): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO project_actuals (id, tracker_project_id, period_label, actual_cost, notes)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(tracker_project_id, period_label)
+      DO UPDATE SET actual_cost = excluded.actual_cost, notes = excluded.notes, recorded_at = CURRENT_TIMESTAMP
+    `).run(uuidv4(), trackerProjectId, actual.period_label, actual.actual_cost, actual.notes ?? null);
+    // Revalidate tracker pages
+    const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(trackerProjectId) as any;
+    if (tp) {
+      revalidatePath(`/tracker/projects/${tp.project_id}/actuals`);
+      revalidatePath(`/tracker/projects/${tp.project_id}/burn-rate`);
+      revalidatePath(`/tracker/projects/${tp.project_id}/overview`);
+    }
+  } catch (error) {
+    console.error("Failed to upsert project actual:", error);
+    throw error;
+  }
+}
+
+export async function getProjectActuals(trackerProjectId: string): Promise<ProjectActual[]> {
+  try {
+    const db = getDb();
+    return db.prepare("SELECT * FROM project_actuals WHERE tracker_project_id = ? ORDER BY period_label ASC").all(trackerProjectId) as ProjectActual[];
+  } catch { return []; }
+}
+
+export async function createHealthSnapshot(data: Omit<HealthSnapshot, 'id' | 'created_at'>): Promise<string> {
+  const db = getDb();
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO health_snapshots (id, tracker_project_id, snapshot_date, percent_complete, schedule_status, budget_status, scope_status, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, data.tracker_project_id, data.snapshot_date, data.percent_complete ?? null, data.schedule_status, data.budget_status, data.scope_status, data.notes ?? null);
+  const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(data.tracker_project_id) as any;
+  if (tp) revalidatePath(`/tracker/projects/${tp.project_id}/overview`);
+  return id;
+}
+
+export async function getHealthSnapshots(trackerProjectId: string): Promise<HealthSnapshot[]> {
+  try {
+    const db = getDb();
+    return db.prepare("SELECT * FROM health_snapshots WHERE tracker_project_id = ? ORDER BY snapshot_date DESC").all(trackerProjectId) as HealthSnapshot[];
+  } catch { return []; }
+}
+
+export async function createStatusReport(data: { tracker_project_id: string; report_date: string; content: string; generated_by: string }): Promise<string> {
+  const db = getDb();
+  const id = uuidv4();
+  db.prepare("INSERT INTO status_reports (id, tracker_project_id, report_date, content, generated_by) VALUES (?, ?, ?, ?, ?)")
+    .run(id, data.tracker_project_id, data.report_date, data.content, data.generated_by);
+  const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(data.tracker_project_id) as any;
+  if (tp) revalidatePath(`/tracker/projects/${tp.project_id}/reports`);
+  return id;
+}
+
+export async function getStatusReports(trackerProjectId: string): Promise<StatusReport[]> {
+  try {
+    const db = getDb();
+    return db.prepare("SELECT * FROM status_reports WHERE tracker_project_id = ? ORDER BY report_date DESC, created_at DESC").all(trackerProjectId) as StatusReport[];
+  } catch { return []; }
+}
+
+export async function deleteStatusReport(id: string): Promise<void> {
+  try {
+    const db = getDb();
+    const report = db.prepare("SELECT tracker_project_id FROM status_reports WHERE id = ?").get(id) as any;
+    db.prepare("DELETE FROM status_reports WHERE id = ?").run(id);
+    if (report) {
+      const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(report.tracker_project_id) as any;
+      if (tp) revalidatePath(`/tracker/projects/${tp.project_id}/reports`);
+    }
+  } catch (error) { console.error("Failed to delete status report:", error); throw error; }
+}
+
+export async function createChangeRequest(data: Omit<ChangeRequest, 'id' | 'created_at'>): Promise<string> {
+  const db = getDb();
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO change_requests (id, tracker_project_id, title, description, requested_by, status, impact_hours, impact_cost)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, data.tracker_project_id, data.title, data.description ?? null, data.requested_by ?? null, data.status, data.impact_hours ?? null, data.impact_cost ?? null);
+  const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(data.tracker_project_id) as any;
+  if (tp) revalidatePath(`/tracker/projects/${tp.project_id}/reports`);
+  return id;
+}
+
+export async function updateChangeRequest(id: string, updates: Partial<ChangeRequest>): Promise<void> {
+  try {
+    const db = getDb();
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+    if (updates.title !== undefined) { setClauses.push("title = ?"); values.push(updates.title); }
+    if (updates.description !== undefined) { setClauses.push("description = ?"); values.push(updates.description); }
+    if (updates.requested_by !== undefined) { setClauses.push("requested_by = ?"); values.push(updates.requested_by); }
+    if (updates.status !== undefined) { setClauses.push("status = ?"); values.push(updates.status); }
+    if (updates.impact_hours !== undefined) { setClauses.push("impact_hours = ?"); values.push(updates.impact_hours); }
+    if (updates.impact_cost !== undefined) { setClauses.push("impact_cost = ?"); values.push(updates.impact_cost); }
+    if (setClauses.length > 0) {
+      values.push(id);
+      db.prepare(`UPDATE change_requests SET ${setClauses.join(", ")} WHERE id = ?`).run(...values);
+    }
+    const cr = db.prepare("SELECT tracker_project_id FROM change_requests WHERE id = ?").get(id) as any;
+    if (cr) {
+      const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(cr.tracker_project_id) as any;
+      if (tp) revalidatePath(`/tracker/projects/${tp.project_id}/reports`);
+    }
+  } catch (error) { console.error("Failed to update change request:", error); throw error; }
+}
+
+export async function getChangeRequests(trackerProjectId: string): Promise<ChangeRequest[]> {
+  try {
+    const db = getDb();
+    return db.prepare("SELECT * FROM change_requests WHERE tracker_project_id = ? ORDER BY created_at DESC").all(trackerProjectId) as ChangeRequest[];
+  } catch { return []; }
+}
+
+export async function deleteChangeRequest(id: string): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare("DELETE FROM change_requests WHERE id = ?").run(id);
+  } catch (error) { console.error("Failed to delete change request:", error); throw error; }
+}
+
+export async function getPeriodBurns(trackerProjectId: string): Promise<PeriodBurn[]> {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT * FROM period_burns WHERE tracker_project_id = ? ORDER BY period_start ASC"
+    ).all(trackerProjectId) as any[];
+    return rows.map(r => ({
+      ...r,
+      is_submitted: r.is_submitted === 1,
+      resource_breakdown: r.resource_breakdown ? JSON.parse(r.resource_breakdown) : null,
+    })) as PeriodBurn[];
+  } catch { return []; }
+}
+
+export async function upsertPeriodBurn(
+  trackerProjectId: string,
+  data: {
+    period_start: string;
+    period_end: string;
+    period_label: string;
+    total_hours: number;
+    resource_breakdown: PeriodBurnResourceEntry[] | null;
+    notes: string | null;
+    is_submitted: boolean;
+  }
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = db.prepare(
+      "SELECT id FROM period_burns WHERE tracker_project_id = ? AND period_start = ?"
+    ).get(trackerProjectId, data.period_start) as any;
+    if (existing) {
+      db.prepare(`
+        UPDATE period_burns SET
+          period_end = ?, period_label = ?, total_hours = ?,
+          resource_breakdown = ?, notes = ?, is_submitted = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        data.period_end, data.period_label, data.total_hours,
+        data.resource_breakdown ? JSON.stringify(data.resource_breakdown) : null,
+        data.notes, data.is_submitted ? 1 : 0,
+        existing.id
+      );
+    } else {
+      db.prepare(`
+        INSERT INTO period_burns
+          (id, tracker_project_id, period_start, period_end, period_label, total_hours, resource_breakdown, notes, is_submitted)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        uuidv4(), trackerProjectId, data.period_start, data.period_end,
+        data.period_label, data.total_hours,
+        data.resource_breakdown ? JSON.stringify(data.resource_breakdown) : null,
+        data.notes, data.is_submitted ? 1 : 0
+      );
+    }
+    const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(trackerProjectId) as any;
+    if (tp) {
+      revalidatePath(`/tracker/projects/${tp.project_id}/actuals`);
+      revalidatePath(`/tracker/projects/${tp.project_id}/burn-rate`);
+      revalidatePath(`/tracker/projects/${tp.project_id}/overview`);
+    }
+  } catch (error) { console.error("Failed to upsert period burn:", error); throw error; }
+}
+
+export async function deletePeriodBurn(id: string): Promise<void> {
+  try {
+    const db = getDb();
+    const burn = db.prepare("SELECT tracker_project_id FROM period_burns WHERE id = ?").get(id) as any;
+    db.prepare("DELETE FROM period_burns WHERE id = ?").run(id);
+    if (burn) {
+      const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(burn.tracker_project_id) as any;
+      if (tp) {
+        revalidatePath(`/tracker/projects/${tp.project_id}/actuals`);
+        revalidatePath(`/tracker/projects/${tp.project_id}/burn-rate`);
+        revalidatePath(`/tracker/projects/${tp.project_id}/overview`);
+      }
+    }
+  } catch (error) { console.error("Failed to delete period burn:", error); throw error; }
+}
+
+export async function updateTrackerCadence(trackerProjectId: string, cadence: ReportingCadence): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare("UPDATE tracker_projects SET reporting_cadence = ? WHERE id = ?").run(cadence, trackerProjectId);
+    const tp = db.prepare("SELECT project_id FROM tracker_projects WHERE id = ?").get(trackerProjectId) as any;
+    if (tp) revalidatePath(`/tracker/projects/${tp.project_id}/actuals`);
+  } catch (error) { console.error("Failed to update reporting cadence:", error); throw error; }
+}
+
+export type SchedulePhase = Phase & {
+  status: 'complete' | 'active' | 'upcoming';
+  progressPercent: number;
+};
+
+export async function getTrackerSchedule(estimatorProjectId: string): Promise<SchedulePhase[]> {
+  try {
+    const db = getDb();
+
+    const phases = db.prepare(`
+      SELECT * FROM project_phases
+      WHERE project_id = ?
+      ORDER BY sort_order ASC, start_date ASC
+    `).all(estimatorProjectId) as Phase[];
+
+    const today = new Date().toISOString().split('T')[0];
+
+    return phases.map(phase => {
+      const start = new Date(phase.start_date);
+      const end = new Date(phase.end_date);
+      const now = new Date(today);
+
+      let status: 'complete' | 'active' | 'upcoming';
+      let progressPercent = 0;
+
+      if (now > end) {
+        status = 'complete';
+        progressPercent = 100;
+      } else if (now >= start && now <= end) {
+        status = 'active';
+        const totalDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+        const elapsedDays = (now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+        progressPercent = totalDays > 0 ? Math.round((elapsedDays / totalDays) * 100) : 0;
+      } else {
+        status = 'upcoming';
+        progressPercent = 0;
+      }
+
+      return { ...phase, status, progressPercent };
+    });
+  } catch (error) {
+    console.error("Failed to get tracker schedule:", error);
+    return [];
+  }
+}
+
+export async function generateAIStatusReport(trackerProjectId: string): Promise<{ content: string; reportId: string }> {
+  const db = getDb();
+  const tp = db.prepare(`
+    SELECT tp.*, p.name as project_name, p.client_name, p.project_status,
+           p.project_start_date, p.project_target_end_date
+    FROM tracker_projects tp JOIN projects p ON tp.project_id = p.id
+    WHERE tp.id = ?
+  `).get(trackerProjectId) as any;
+  if (!tp) throw new Error("Tracker project not found");
+
+  const actuals = db.prepare("SELECT * FROM project_actuals WHERE tracker_project_id = ? ORDER BY period_label ASC").all(trackerProjectId) as ProjectActual[];
+  const changes = db.prepare("SELECT * FROM change_requests WHERE tracker_project_id = ? ORDER BY created_at DESC LIMIT 10").all(trackerProjectId) as ChangeRequest[];
+  const lastSnapshot = db.prepare("SELECT * FROM health_snapshots WHERE tracker_project_id = ? ORDER BY snapshot_date DESC LIMIT 1").get(trackerProjectId) as HealthSnapshot | undefined;
+
+  const totalActual = actuals.reduce((s, a) => s + a.actual_cost, 0);
+  const baseline = tp.baseline_total_cost || 0;
+  const burnPct = baseline > 0 ? Math.round((totalActual / baseline) * 100) : 0;
+  const openChanges = changes.filter(c => c.status === 'open').length;
+
+  const today = new Date().toISOString().split('T')[0];
+
+  const prompt = `You are a project delivery manager writing a concise weekly status report for a client project.
+
+Project: ${tp.project_name}
+Client: ${tp.client_name}
+Status: ${tp.project_status || 'In Progress'}
+Report Date: ${today}
+
+Financial Summary:
+- Baseline Budget: $${Math.round(baseline).toLocaleString()}
+- Actual Spend to Date: $${Math.round(totalActual).toLocaleString()}
+- Budget Burned: ${burnPct}%
+
+Schedule:
+- Start Date: ${tp.project_start_date || 'Not set'}
+- Target End: ${tp.project_target_end_date || 'Not set'}
+
+Recent Health Check:
+${lastSnapshot ? `- Schedule: ${lastSnapshot.schedule_status}, Budget: ${lastSnapshot.budget_status}, Scope: ${lastSnapshot.scope_status}, % Complete: ${lastSnapshot.percent_complete ?? 'N/A'}%` : '- No health check recorded yet'}
+
+Open Change Requests: ${openChanges}
+${changes.length > 0 ? changes.slice(0, 3).map(c => `- [${c.status.toUpperCase()}] ${c.title}${c.impact_cost ? ` ($${Math.round(c.impact_cost).toLocaleString()} impact)` : ''}`).join('\n') : '- None'}
+
+Write a professional project status report in markdown format covering:
+1. Executive Summary (2-3 sentences)
+2. Key Accomplishments This Period
+3. Financial Health
+4. Schedule Status
+5. Risks & Issues
+6. Next Steps
+
+Keep it concise and professional. Use bullet points.`;
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured. Add it to your .env.local file to enable AI report generation.");
+
+  const { GoogleGenerativeAI } = await import("@google/generative-ai");
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const result = await model.generateContent(prompt);
+  const content = result.response.text();
+
+  const reportId = uuidv4();
+  db.prepare("INSERT INTO status_reports (id, tracker_project_id, report_date, content, generated_by) VALUES (?, ?, ?, ?, 'ai')")
+    .run(reportId, trackerProjectId, today, content);
+  revalidatePath(`/tracker/projects/${tp.project_id}/reports`);
+  return { content, reportId };
+}
+
+// ── Billing Milestones ────────────────────────────────────────────────────────
+
+export async function getBillingMilestones(projectId: string): Promise<BillingMilestone[]> {
+  try {
+    const db = getDb();
+    return db.prepare("SELECT * FROM billing_milestones WHERE project_id = ? ORDER BY sort_order ASC").all(projectId) as BillingMilestone[];
+  } catch { return []; }
+}
+
+export async function saveBillingMilestone(milestone: Partial<BillingMilestone>): Promise<void> {
+  const db = getDb();
+  const id = milestone.id || uuidv4();
+  db.prepare(`
+    INSERT INTO billing_milestones (
+      id, project_id, tracker_project_id, title, description, deliverables,
+      percentage, amount, planned_date, actual_date, invoice_number,
+      invoice_status, payment_terms, trigger_type, sort_order, notes,
+      revised_date, milestone_notes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title            = excluded.title,
+      description      = excluded.description,
+      deliverables     = excluded.deliverables,
+      percentage       = excluded.percentage,
+      amount           = excluded.amount,
+      planned_date     = excluded.planned_date,
+      actual_date      = excluded.actual_date,
+      invoice_number   = excluded.invoice_number,
+      invoice_status   = excluded.invoice_status,
+      payment_terms    = excluded.payment_terms,
+      trigger_type     = excluded.trigger_type,
+      sort_order       = excluded.sort_order,
+      notes            = excluded.notes,
+      revised_date     = excluded.revised_date,
+      milestone_notes  = excluded.milestone_notes,
+      updated_at       = CURRENT_TIMESTAMP
+  `).run(
+    id, milestone.project_id, milestone.tracker_project_id ?? null,
+    milestone.title, milestone.description ?? null, milestone.deliverables ?? null,
+    milestone.percentage ?? 0, milestone.amount ?? 0,
+    milestone.planned_date ?? null, milestone.actual_date ?? null,
+    milestone.invoice_number ?? null, milestone.invoice_status ?? 'not_invoiced',
+    milestone.payment_terms ?? 30, milestone.trigger_type ?? 'milestone',
+    milestone.sort_order ?? 0, milestone.notes ?? null,
+    milestone.revised_date ?? null, milestone.milestone_notes ?? null
+  );
+  if (milestone.project_id) {
+    revalidatePath(`/projects/${milestone.project_id}/commercials`);
+    revalidatePath(`/tracker/projects/${milestone.project_id}/billing`);
+    revalidatePath(`/tracker/projects/${milestone.project_id}/overview`);
+  }
+}
+
+export async function deleteBillingMilestone(id: string, projectId: string): Promise<void> {
+  const db = getDb();
+  db.prepare("DELETE FROM billing_milestones WHERE id = ?").run(id);
+  revalidatePath(`/projects/${projectId}/commercials`);
+  revalidatePath(`/tracker/projects/${projectId}/billing`);
+}
+
+const INLINE_FIELD_ALLOWLIST = new Set(['revised_date', 'milestone_notes', 'actual_date', 'invoice_number'])
+
+export async function updateBillingMilestoneField(
+  id: string,
+  projectId: string,
+  field: 'revised_date' | 'milestone_notes' | 'actual_date' | 'invoice_number',
+  value: string | null
+): Promise<void> {
+  if (!INLINE_FIELD_ALLOWLIST.has(field)) throw new Error('Invalid field')
+  const db = getDb();
+  db.prepare(`UPDATE billing_milestones SET ${field} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(value, id);
+  revalidatePath(`/tracker/projects/${projectId}/billing`);
+  revalidatePath(`/tracker/projects/${projectId}/overview`);
+  revalidatePath('/tracker');
+}
+
+export async function getMilestoneTemplates(): Promise<MilestoneTemplate[]> {
+  try {
+    const db = getDb();
+    return db.prepare("SELECT * FROM milestone_templates ORDER BY rowid ASC").all() as MilestoneTemplate[];
+  } catch { return []; }
+}
+
+export async function loadMilestoneTemplate(
+  projectId: string,
+  templateName: string,
+  quotedPrice: number,
+  projectStartDate: string,
+  durationWeeks: number
+): Promise<void> {
+  const db = getDb();
+  const template = db.prepare("SELECT * FROM milestone_templates WHERE template_name = ?").get(templateName) as MilestoneTemplate | undefined;
+  if (!template) return;
+
+  const milestones: any[] = JSON.parse(template.milestones_json);
+  db.prepare("DELETE FROM billing_milestones WHERE project_id = ?").run(projectId);
+
+  const startDate = new Date(projectStartDate + "T12:00:00");
+
+  if (templateName === 'T&M Monthly') {
+    const months = Math.max(1, Math.ceil(durationWeeks / 4));
+    const monthlyAmount = Math.round(quotedPrice / months);
+    const insert = db.prepare("INSERT INTO billing_milestones (id, project_id, title, percentage, amount, planned_date, trigger_type, sort_order) VALUES (?, ?, ?, ?, ?, ?, 'date', ?)");
+    db.transaction(() => {
+      for (let i = 0; i < months; i++) {
+        const d = new Date(startDate);
+        d.setMonth(d.getMonth() + i + 1);
+        insert.run(uuidv4(), projectId, `Month ${i + 1} Invoice`, Math.round((100 / months) * 10) / 10, monthlyAmount, d.toISOString().split('T')[0], i);
+      }
+    })();
+  } else {
+    const insert = db.prepare("INSERT INTO billing_milestones (id, project_id, title, percentage, amount, planned_date, trigger_type, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    db.transaction(() => {
+      milestones.forEach((m: any, i: number) => {
+        const offsetWeeks = m.percentage_offset !== undefined ? m.percentage_offset : i * (durationWeeks / Math.max(milestones.length, 1));
+        const d = new Date(startDate);
+        d.setDate(d.getDate() + Math.round(offsetWeeks * 7));
+        insert.run(uuidv4(), projectId, m.title, m.percentage, Math.round(quotedPrice * (m.percentage / 100)), d.toISOString().split('T')[0], m.trigger_type, i);
+      });
+    })();
+  }
+
+  // Re-link to tracker if project is already won
+  try {
+    const tp = db.prepare("SELECT id FROM tracker_projects WHERE project_id = ?").get(projectId) as any;
+    if (tp) db.prepare("UPDATE billing_milestones SET tracker_project_id = ? WHERE project_id = ?").run(tp.id, projectId);
+  } catch {}
+
+  revalidatePath(`/projects/${projectId}/commercials`);
+  revalidatePath(`/tracker/projects/${projectId}/billing`);
+  revalidatePath(`/tracker/projects/${projectId}/overview`);
+}
+
+export async function updateMilestoneStatus(
+  id: string,
+  updates: { invoice_number?: string; actual_date?: string; invoice_status: InvoiceStatus; notes?: string }
+): Promise<void> {
+  const db = getDb();
+  const m = db.prepare("SELECT project_id FROM billing_milestones WHERE id = ?").get(id) as any;
+  db.prepare(`
+    UPDATE billing_milestones
+    SET invoice_number = ?, actual_date = ?, invoice_status = ?, notes = COALESCE(?, notes), updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(updates.invoice_number ?? null, updates.actual_date ?? null, updates.invoice_status, updates.notes ?? null, id);
+  if (m) {
+    revalidatePath(`/tracker/projects/${m.project_id}/billing`);
+    revalidatePath(`/tracker/projects/${m.project_id}/overview`);
+  }
+}
+
+export async function getCashFlowForecast(projectId: string): Promise<(BillingMilestone & { payment_due_date: string; cumulative_invoiced: number; is_overdue: boolean })[]> {
+  try {
+    const db = getDb();
+    const milestones = db.prepare("SELECT * FROM billing_milestones WHERE project_id = ? AND planned_date IS NOT NULL ORDER BY planned_date ASC").all(projectId) as BillingMilestone[];
+    let cumulative = 0;
+    const today = new Date();
+    return milestones.map(m => {
+      cumulative += m.amount;
+      const baseDate = m.actual_date ? new Date(m.actual_date + "T12:00:00") : new Date((m.planned_date ?? today.toISOString().split('T')[0]) + "T12:00:00");
+      const dueDate = new Date(baseDate);
+      dueDate.setDate(dueDate.getDate() + (m.payment_terms ?? 30));
+      return {
+        ...m,
+        payment_due_date: dueDate.toISOString().split('T')[0],
+        cumulative_invoiced: cumulative,
+        is_overdue: m.invoice_status === 'invoiced' && today > dueDate,
+      };
+    });
+  } catch { return []; }
+}
+
+export async function setupTrackerProject(
+  estimatorProjectId: string,
+  data: {
+    pmName: string;
+    pmEmail: string;
+    clientContact: string;
+    clientEmail: string;
+    actualStartDate: string;
+    reportingCadence: ReportingCadence;
+  }
+): Promise<{ trackerId: string; baselineCost: number }> {
+  const db = getDb();
+
+  let trackerRow = db.prepare("SELECT * FROM tracker_projects WHERE project_id = ?").get(estimatorProjectId) as any;
+
+  if (!trackerRow) {
+    const snapshot = await buildBaselineSnapshot(estimatorProjectId);
+    const newId = uuidv4();
+    db.prepare(`
+      INSERT INTO tracker_projects (id, project_id, baseline_snapshot, baseline_total_cost, baseline_total_hours)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(newId, estimatorProjectId, JSON.stringify(snapshot), snapshot.totalCost, snapshot.totalHours);
+    trackerRow = db.prepare("SELECT * FROM tracker_projects WHERE id = ?").get(newId) as any;
+  }
+
+  const notes = JSON.stringify({ pmName: data.pmName, pmEmail: data.pmEmail, clientContact: data.clientContact, clientEmail: data.clientEmail });
+  db.prepare("UPDATE tracker_projects SET notes = ?, reporting_cadence = ? WHERE id = ?")
+    .run(notes, data.reportingCadence, trackerRow.id);
+
+  if (data.actualStartDate) {
+    db.prepare("UPDATE projects SET project_start_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(data.actualStartDate, estimatorProjectId);
+  }
+
+  revalidatePath(`/projects/${estimatorProjectId}`);
+  revalidatePath(`/tracker/projects/${estimatorProjectId}/overview`);
+  revalidatePath("/tracker");
+
+  return { trackerId: trackerRow.id, baselineCost: trackerRow.baseline_total_cost ?? 0 };
+}
+
+// ── Pipeline Revenue Forecast ─────────────────────────────────────────────────
+
+const COST_SUBQUERY = `
+  COALESCE((
+    SELECT SUM(rl.hours * r.rate_per_hour)
+    FROM resources r
+    LEFT JOIN resource_loading rl ON r.id = rl.resource_id
+    WHERE r.project_id = p.id
+    AND (
+      (COALESCE(p.loading_period_type, 'weekly') = 'weekly' AND length(rl.period_label) = 10) OR
+      (p.loading_period_type = 'monthly' AND length(rl.period_label) = 7)
+    )
+  ), 0)
+`;
+
+function generateMonthlyForecast(pipeline: PipelineProject[]): MonthlyForecast[] {
+  const months: Record<string, { total: number; weighted: number; deals: number }> = {};
+  for (const p of pipeline) {
+    const date = p.expected_start_date || p.updated_at;
+    const key = date.slice(0, 7);
+    if (!months[key]) months[key] = { total: 0, weighted: 0, deals: 0 };
+    months[key].total += p.quoted_price;
+    months[key].weighted += p.quoted_price * ((p.win_probability ?? 50) / 100);
+    months[key].deals++;
+  }
+  return Object.entries(months)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, data]) => ({ month, ...data }));
+}
+
+export async function getPipelineData(): Promise<PipelineData> {
+  const db = getDb();
+
+  const pipeline = db.prepare(`
+    SELECT p.*, COALESCE(p.win_probability, 50) as win_probability,
+      ${COST_SUBQUERY} as quoted_price
+    FROM projects p
+    WHERE p.status IN ('draft', 'submitted')
+    ORDER BY p.updated_at DESC
+  `).all() as PipelineProject[];
+
+  const wonThisYear = db.prepare(`
+    SELECT p.*, COALESCE(p.win_probability, 100) as win_probability,
+      ${COST_SUBQUERY} as quoted_price
+    FROM projects p
+    WHERE p.status = 'won'
+    AND strftime('%Y', p.updated_at) = strftime('%Y', 'now')
+    ORDER BY p.updated_at DESC
+  `).all() as PipelineProject[];
+
+  const lostThisYear = db.prepare(`
+    SELECT p.*, COALESCE(p.win_probability, 0) as win_probability,
+      ${COST_SUBQUERY} as quoted_price
+    FROM projects p
+    WHERE p.status = 'lost'
+    AND strftime('%Y', p.updated_at) = strftime('%Y', 'now')
+    ORDER BY p.updated_at DESC
+  `).all() as PipelineProject[];
+
+  const allWon = db.prepare(`
+    SELECT p.*, COALESCE(p.win_probability, 100) as win_probability,
+      ${COST_SUBQUERY} as quoted_price
+    FROM projects p WHERE p.status = 'won' ORDER BY p.updated_at DESC
+  `).all() as PipelineProject[];
+
+  const allLost = db.prepare(`
+    SELECT p.*, COALESCE(p.win_probability, 0) as win_probability,
+      ${COST_SUBQUERY} as quoted_price
+    FROM projects p WHERE p.status = 'lost' ORDER BY p.updated_at DESC
+  `).all() as PipelineProject[];
+
+  const totalPipeline = pipeline.reduce((s, p) => s + p.quoted_price, 0);
+  const weightedPipeline = pipeline.reduce((s, p) => s + p.quoted_price * ((p.win_probability ?? 50) / 100), 0);
+  const wonRevenue = wonThisYear.reduce((s, p) => s + p.quoted_price, 0);
+  const lostRevenue = lostThisYear.reduce((s, p) => s + p.quoted_price, 0);
+  const winRate = wonThisYear.length + lostThisYear.length > 0
+    ? (wonThisYear.length / (wonThisYear.length + lostThisYear.length)) * 100 : 0;
+
+  return {
+    pipeline,
+    wonThisYear,
+    lostThisYear,
+    allWon,
+    allLost,
+    metrics: {
+      totalPipeline,
+      weightedPipeline,
+      wonRevenue,
+      lostRevenue,
+      winRate,
+      dealCount: pipeline.length,
+    },
+    monthlyForecast: generateMonthlyForecast(pipeline),
+  };
+}
+
+export async function updateProjectPursuitData(
+  projectId: string,
+  data: Partial<Pick<Project, 'win_probability' | 'expected_start_date' | 'pursuit_owner' | 'vertical' | 'service_line' | 'deal_size_category' | 'outcome_data'>>
+): Promise<void> {
+  const db = getDb();
+  const clauses: string[] = [];
+  const vals: unknown[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (v !== undefined) { clauses.push(`${k} = ?`); vals.push(v); }
+  }
+  if (clauses.length === 0) return;
+  vals.push(projectId);
+  db.prepare(`UPDATE projects SET ${clauses.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(...vals);
+  revalidatePath('/pipeline');
+  revalidatePath(`/projects/${projectId}`);
+  revalidatePath('/');
+}
+
+// ── Client Master List ────────────────────────────────────────────────────────
+
+const COST_SUBQUERY_CLIENT = `
+  COALESCE((
+    SELECT SUM(rl.hours * r.rate_per_hour)
+    FROM resources r
+    LEFT JOIN resource_loading rl ON r.id = rl.resource_id
+    WHERE r.project_id = p.id
+    AND (
+      (COALESCE(p.loading_period_type, 'weekly') = 'weekly' AND length(rl.period_label) = 10) OR
+      (p.loading_period_type = 'monthly' AND length(rl.period_label) = 7)
+    )
+  ), 0)
+`;
+
+export async function getClients(): Promise<Client[]> {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT
+        c.*,
+        COUNT(DISTINCT p.id) as project_count,
+        COALESCE(SUM(CASE WHEN p.status IN ('draft','submitted') THEN ${COST_SUBQUERY_CLIENT} ELSE 0 END), 0) as total_pipeline,
+        COALESCE(SUM(CASE WHEN p.status = 'won' THEN ${COST_SUBQUERY_CLIENT} ELSE 0 END), 0) as total_won,
+        (SELECT cc2.name FROM client_contacts cc2 WHERE cc2.client_id = c.id AND cc2.is_primary = 1 LIMIT 1) as primary_contact_name
+      FROM clients c
+      LEFT JOIN projects p ON p.client_id = c.id
+      WHERE c.is_archived = 0
+      GROUP BY c.id
+      ORDER BY c.name ASC
+    `).all() as any[];
+    return rows.map(r => ({ ...r, is_archived: Boolean(r.is_archived) })) as Client[];
+  } catch (error) {
+    console.error("Failed to fetch clients:", error);
+    return [];
+  }
+}
+
+export async function getClient(id: string): Promise<{ client: Client; contacts: ClientContact[]; notes: ClientNote[]; projects: Project[] } | null> {
+  try {
+    const db = getDb();
+    const clientRow = db.prepare(`
+      SELECT
+        c.*,
+        COUNT(DISTINCT p.id) as project_count,
+        COALESCE(SUM(CASE WHEN p.status IN ('draft','submitted') THEN ${COST_SUBQUERY_CLIENT} ELSE 0 END), 0) as total_pipeline,
+        COALESCE(SUM(CASE WHEN p.status = 'won' THEN ${COST_SUBQUERY_CLIENT} ELSE 0 END), 0) as total_won,
+        (SELECT cc2.name FROM client_contacts cc2 WHERE cc2.client_id = c.id AND cc2.is_primary = 1 LIMIT 1) as primary_contact_name
+      FROM clients c
+      LEFT JOIN projects p ON p.client_id = c.id
+      WHERE c.id = ?
+      GROUP BY c.id
+    `).get(id) as any;
+    if (!clientRow) return null;
+    const client: Client = { ...clientRow, is_archived: Boolean(clientRow.is_archived) };
+    const contacts = db.prepare("SELECT * FROM client_contacts WHERE client_id = ? ORDER BY is_primary DESC, name ASC").all(id) as ClientContact[];
+    const notes = db.prepare("SELECT * FROM client_notes WHERE client_id = ? ORDER BY created_at DESC").all(id) as ClientNote[];
+    const projects = db.prepare(`
+      SELECT p.*, ${COST_SUBQUERY_CLIENT} as total_cost
+      FROM projects p
+      WHERE p.client_id = ?
+      ORDER BY p.updated_at DESC
+    `).all(id) as Project[];
+    return { client, contacts: contacts.map(c => ({ ...c, is_primary: Boolean(c.is_primary) })), notes, projects };
+  } catch (error) {
+    console.error("Failed to fetch client:", error);
+    return null;
+  }
+}
+
+export async function saveClient(data: Partial<Client> & { name: string }): Promise<{ id: string }> {
+  try {
+    const db = getDb();
+    const id = data.id ?? uuidv4();
+    const existing = db.prepare("SELECT id FROM clients WHERE id = ?").get(id);
+    if (existing) {
+      db.prepare(`
+        UPDATE clients SET
+          name = ?, industry = ?, website = ?, address = ?, city = ?, state = ?, country = ?,
+          phone = ?, email = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        data.name, data.industry ?? null, data.website ?? null, data.address ?? null,
+        data.city ?? null, data.state ?? null, data.country ?? null,
+        data.phone ?? null, data.email ?? null, data.notes ?? null, id
+      );
+    } else {
+      db.prepare(`
+        INSERT INTO clients (id, name, industry, website, address, city, state, country, phone, email, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, data.name, data.industry ?? null, data.website ?? null, data.address ?? null,
+        data.city ?? null, data.state ?? null, data.country ?? 'USA',
+        data.phone ?? null, data.email ?? null, data.notes ?? null
+      );
+    }
+    revalidatePath('/clients');
+    revalidatePath(`/clients/${id}`);
+    return { id };
+  } catch (error) {
+    console.error("Failed to save client:", error);
+    throw error;
+  }
+}
+
+export async function archiveClient(id: string): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare("UPDATE clients SET is_archived = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    revalidatePath('/clients');
+  } catch (error) {
+    console.error("Failed to archive client:", error);
+    throw error;
+  }
+}
+
+export async function deleteClient(id: string): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare("UPDATE projects SET client_id = NULL WHERE client_id = ?").run(id);
+    db.prepare("DELETE FROM clients WHERE id = ?").run(id);
+    revalidatePath('/clients');
+  } catch (error) {
+    console.error("Failed to delete client:", error);
+    throw error;
+  }
+}
+
+export async function saveClientContact(data: Partial<ClientContact> & { client_id: string; name: string }): Promise<void> {
+  try {
+    const db = getDb();
+    const id = data.id ?? uuidv4();
+    const existing = db.prepare("SELECT id FROM client_contacts WHERE id = ?").get(id);
+    if (data.is_primary) {
+      db.prepare("UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?").run(data.client_id);
+    }
+    if (existing) {
+      db.prepare(`
+        UPDATE client_contacts SET name = ?, title = ?, email = ?, phone = ?, is_primary = ?, notes = ?
+        WHERE id = ?
+      `).run(data.name, data.title ?? null, data.email ?? null, data.phone ?? null, data.is_primary ? 1 : 0, data.notes ?? null, id);
+    } else {
+      db.prepare(`
+        INSERT INTO client_contacts (id, client_id, name, title, email, phone, is_primary, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, data.client_id, data.name, data.title ?? null, data.email ?? null, data.phone ?? null, data.is_primary ? 1 : 0, data.notes ?? null);
+    }
+    revalidatePath(`/clients/${data.client_id}`);
+  } catch (error) {
+    console.error("Failed to save client contact:", error);
+    throw error;
+  }
+}
+
+export async function deleteClientContact(id: string, clientId: string): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare("DELETE FROM client_contacts WHERE id = ?").run(id);
+    revalidatePath(`/clients/${clientId}`);
+  } catch (error) {
+    console.error("Failed to delete client contact:", error);
+    throw error;
+  }
+}
+
+export async function saveClientNote(data: { id?: string; client_id: string; content: string; category: string; created_by?: string }): Promise<void> {
+  try {
+    const db = getDb();
+    const id = data.id ?? uuidv4();
+    const existing = db.prepare("SELECT id FROM client_notes WHERE id = ?").get(id);
+    if (existing) {
+      db.prepare("UPDATE client_notes SET content = ?, category = ? WHERE id = ?").run(data.content, data.category, id);
+    } else {
+      db.prepare("INSERT INTO client_notes (id, client_id, content, category, created_by) VALUES (?, ?, ?, ?, ?)").run(
+        id, data.client_id, data.content, data.category, data.created_by ?? null
+      );
+    }
+    revalidatePath(`/clients/${data.client_id}`);
+  } catch (error) {
+    console.error("Failed to save client note:", error);
+    throw error;
+  }
+}
+
+export async function deleteClientNote(id: string, clientId: string): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare("DELETE FROM client_notes WHERE id = ?").run(id);
+    revalidatePath(`/clients/${clientId}`);
+  } catch (error) {
+    console.error("Failed to delete client note:", error);
+    throw error;
+  }
+}
+
+export async function linkProjectToClient(projectId: string, clientId: string | null): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare("UPDATE projects SET client_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(clientId, projectId);
+    revalidatePath(`/projects/${projectId}`);
+    revalidatePath('/clients');
+    if (clientId) revalidatePath(`/clients/${clientId}`);
+  } catch (error) {
+    console.error("Failed to link project to client:", error);
+    throw error;
+  }
+}
+
+// ── Intelligence Server Actions ────────────────────────────────────────────────
+
+export async function getClientIntelligenceAction(clientId: string) {
+  const { getClientIntelligence } = await import('./intelligence')
+  return getClientIntelligence(clientId)
+}
+
+export async function getCalibrationSuggestionsAction() {
+  const { getCalibrationSuggestions } = await import('./intelligence')
+  return getCalibrationSuggestions()
+}
+
+export async function getSimilarProjectsAction(projectId: string) {
+  const { getSimilarProjects } = await import('./intelligence')
+  return getSimilarProjects(projectId)
+}
+
+export async function getCapacityAnalysisAction() {
+  const { getCapacityAnalysis } = await import('./intelligence')
+  return getCapacityAnalysis()
+}
+
+export async function getBidScorePredictionAction(scores: Record<string, number>) {
+  const { getBidScorePrediction } = await import('./intelligence')
+  return getBidScorePrediction(scores)
+}
+
+export async function applyCalibrationUpdatesAction(updates: { libraryId: string; newHours: number }[]): Promise<void> {
+  const { applyCalibrationUpdates } = await import('./intelligence')
+  await applyCalibrationUpdates(updates)
+  revalidatePath('/analytics/calibration')
+  revalidatePath('/library')
 }

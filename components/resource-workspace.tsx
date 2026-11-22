@@ -7,10 +7,12 @@ import {
   Save,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   Calendar,
   Users,
   Wand2,
   MapPin,
+  Loader2,
 } from "lucide-react"
 import { v4 as uuidv4 } from "uuid"
 import debounce from "lodash.debounce"
@@ -55,6 +57,7 @@ import {
   deleteResource,
   updateManyResourceLoading,
   deleteManyResourceLoading,
+  clearAllResourceLoading,
   updateProject,
 } from "@/lib/actions"
 
@@ -104,6 +107,9 @@ export function ResourceWorkspace({
   const [periodSwitchPending, setPeriodSwitchPending] = useState<"weekly" | "monthly" | null>(null)
   const [saving, setSaving] = useState(false)
   const saveCount = useRef(0)
+  type CellSaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+  const [cellSaveStatus, setCellSaveStatus] = useState<CellSaveStatus>('idle')
+  const saveTid = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [applyTimelineOpen, setApplyTimelineOpen] = useState(false)
 
@@ -361,6 +367,21 @@ export function ResourceWorkspace({
     [projectId]
   )
 
+  // Immediate cell save — called on blur so data is never lost on navigation
+  const saveImmediately = useCallback(async (item: ResourceLoading) => {
+    debouncedSaveLoading.cancel()
+    setCellSaveStatus('saving')
+    try {
+      await updateManyResourceLoading([item])
+      setCellSaveStatus('saved')
+      if (saveTid.current) clearTimeout(saveTid.current)
+      saveTid.current = setTimeout(() => setCellSaveStatus('idle'), 2000)
+    } catch {
+      setCellSaveStatus('error')
+      toast.error('Failed to save hours')
+    }
+  }, [debouncedSaveLoading])
+
   // Resource handlers
   const addResource = () => {
     const today = new Date()
@@ -519,18 +540,19 @@ export function ResourceWorkspace({
     setLoadingData(newLoading)
   }
 
-  // Round to nearest 10 on blur (Feature 4)
-  const handleLoadingBlur = (resourceId: string, periodKey: string) => {
+  // Round to nearest 10 on blur, then save immediately (Feature 4)
+  // Using immediate save (not debounced) so data isn't lost when navigating away
+  const handleLoadingBlur = useCallback((resourceId: string, periodKey: string) => {
     setLoadingData(prev => {
       const item = prev.find(l => l.resource_id === resourceId && l.period_label === periodKey)
       if (!item) return prev
       const rounded = roundToNearest10(item.hours)
       const updated = { ...item, hours: rounded }
-      debouncedSaveLoading([updated])
+      saveImmediately(updated)
       if (rounded === item.hours) return prev
       return prev.map(l => l.resource_id === resourceId && l.period_label === periodKey ? updated : l)
     })
-  }
+  }, [saveImmediately])
 
   // Auto-fill defaults: weekly=40, monthly=170 (Feature 4)
   const defaultHours = periodType === "weekly" ? 40 : 170
@@ -1160,9 +1182,24 @@ export function ResourceWorkspace({
         {/* ── Loading Grid ──────────────────────────────────────── */}
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <Calendar className="h-5 w-5 text-sidebar" />
               <h2 className="text-xl font-bold">Loading Grid</h2>
+              {cellSaveStatus === 'saving' && (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />Saving...
+                </span>
+              )}
+              {cellSaveStatus === 'saved' && (
+                <span className="flex items-center gap-1 text-xs text-green-500">
+                  <CheckCircle2 className="h-3 w-3" />Saved
+                </span>
+              )}
+              {cellSaveStatus === 'error' && (
+                <span className="flex items-center gap-1 text-xs text-red-500">
+                  <AlertCircle className="h-3 w-3" />Save failed
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-3">
               {resources.length > 0 && periods.length > 0 && (

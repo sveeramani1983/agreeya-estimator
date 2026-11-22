@@ -47,7 +47,7 @@ export function AppHeader() {
         </Show>
         <Show when="signed-in">
           <NewProjectModal />
-          <UserButton afterSignOutUrl="/" />
+          <UserButton />
         </Show>
       </div>
     </header>

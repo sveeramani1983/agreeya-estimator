@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local AI tool settings
+.claude/settings.local.json
+
+# SQLite runtime files
+*.sqlite-shm
+*.sqlite-wal

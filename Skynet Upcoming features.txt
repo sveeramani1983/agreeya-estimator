@@ -1,0 +1,71 @@
+  High Impact / Differentiators                                                                                                           
+                                                                                                                                          
+  1. AI Estimate Generation from Requirements                                                                                             
+  Paste a requirements doc, SOW, or RFP → AI auto-populates WBS rows with components, complexity, and hours. You already have an RFP
+  analysis stub in Skynet — this would complete it end-to-end.
+
+  2. Proposal PDF Export
+  Generate a branded, client-ready PDF with an exec summary, cost table, schedule Gantt, assumptions, and risks. Right now the Summary tab
+   is screen-only. A "Download Proposal" button would make the tool actually deliverable.
+
+  3. Burn Rate & Cash Flow Chart
+  Based on the resource loading schedule, plot a monthly cash flow curve — how much budget is consumed each month. Critical for clients
+  doing budget planning.
+
+  4. Monte Carlo Cost Simulation
+  Run N simulations varying hours within confidence ranges (high/medium/low) to give a probability distribution of total cost (e.g. "80%
+  chance this comes in under $X"). Adds rigour to the quote.
+
+  ---
+  Workflow / Collaboration
+
+  5. Shareable Read-Only Client Link
+  Generate a unique URL that shows the client a clean, read-only view of the proposal — no editing, just the summary/schedule. Great for
+  async review before sign-off.
+
+  6. Change Tracking / Audit Log
+  Every time an estimate is modified, log what changed, when, and by whom. Clients often ask "what changed since last version?" — this
+  answers it automatically.
+
+  7. Estimate Comparison across Versions
+  The versions tab exists — extend it with a side-by-side diff view showing which rows changed hours, which phases moved, and what the
+  delta in total cost is.
+
+  ---
+  Estimation Intelligence
+
+  8. Historical Accuracy Tracker
+  After a project completes, record actual hours vs estimated hours per component. Over time, build a personal accuracy score and flag
+  categories where you consistently under/over-estimate.
+
+  9. Parametric Benchmarking
+  Industry benchmark data (ISBSG, COSMIC, or your own past projects) to flag when an estimate looks unusual — "Backend API Development is
+  20% below your historical average for complex components."
+
+  10. Dependency Mapping
+  Mark WBS components as depending on others (e.g. "Frontend depends on Backend API"). Visualise the critical path. Flags schedule risk
+  automatically when a dependency is on the longest phase.
+
+  ---
+  UX / Polish
+
+  11. Sprint Planner
+  Based on velocity and story points already in the tool, auto-assign WBS components to sprints with a visual sprint-by-sprint backlog
+  view.
+
+  12. Multi-Currency + Tax
+  Toggle the quote currency (USD/GBP/AUD/INR) and apply GST/VAT automatically. Useful for cross-border proposals.
+
+  13. Estimate Templates (Full Project)
+  Save an entire project (WBS + phases + commercials) as a reusable template — not just component library items, but whole engagement
+  blueprints.
+
+  ---
+  Quick Wins
+
+  14. Email Summary — send the summary page directly to a client email from within the tool.
+
+  15. Dark/Light Print Styles — the Gantt and summary already exist; add proper print/PDF CSS so Ctrl+P produces a clean output without
+  nav chrome.
+
+  16. Component Duplication — duplicate an entire WBS row with all its subtasks (currently you can only add from scratch or library).

@@ -16,6 +16,9 @@ import {
   TrendingUp,
   Activity,
   GitBranch,
+  LayoutDashboard,
+  Target,
+  Users,
 } from "lucide-react"
 
 import {
@@ -35,13 +38,23 @@ import { cn } from "@/lib/utils"
 const navMain = [
   {
     title: "Dashboard",
-    url: "/",
+    url: "/estimator",
     icon: Home,
+  },
+  {
+    title: "Pipeline",
+    url: "/pipeline",
+    icon: Target,
   },
   {
     title: "Projects",
     url: "/projects",
     icon: Folder,
+  },
+  {
+    title: "Clients",
+    url: "/clients",
+    icon: Users,
   },
   {
     title: "Component Library",
@@ -57,6 +70,11 @@ const navMain = [
     title: "Analytics",
     url: "/analytics",
     icon: BarChart2,
+  },
+  {
+    title: "Calibration",
+    url: "/analytics/calibration",
+    icon: Activity,
   },
 ]
 
@@ -93,6 +111,12 @@ const navIntelligence = [
   },
 ]
 
+const navTracker = [
+  { title: "Dashboard",          url: "/tracker",            icon: LayoutDashboard },
+  { title: "Active Projects",    url: "/tracker/projects",   icon: Folder          },
+  { title: "Portfolio Analytics",url: "/tracker/analytics",  icon: BarChart2       },
+]
+
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname()
   const { user } = useUser()
@@ -102,8 +126,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const displayName = user?.fullName ?? "Loading..."
   const displayRole = user?.primaryEmailAddress?.emailAddress ?? ""
 
+  const isHome = pathname === "/"
+  const isTracker = pathname.startsWith("/tracker")
+
   function isActive(url: string) {
-    return url === "/" ? pathname === "/" : pathname.startsWith(url)
+    if (url === "/tracker") return pathname === "/tracker"
+    if (url === "/") return pathname === "/"
+    return pathname.startsWith(url)
   }
 
   function itemClass(active: boolean) {
@@ -134,54 +163,117 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
 
       <SidebarContent className="px-3 py-6 bg-[#1A1C23]">
-        {/* ── Main navigation ── */}
-        <SidebarGroup className="p-0">
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-1.5">
-              {navMain.map((item) => {
-                const active = isActive(item.url)
-                return (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton
-                      tooltip={item.title}
-                      className={itemClass(active)}
-                      render={<a href={item.url} />}
-                    >
-                      <item.icon className={iconClass(active)} />
-                      <span className="text-[13px] ml-1">{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {/* ── Home link ── */}
+        <SidebarMenu className="mb-3">
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              tooltip="Home"
+              className={itemClass(isHome)}
+              render={<a href="/" />}
+            >
+              <Home className={iconClass(isHome)} />
+              <span className="text-[13px] ml-1">Home</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
 
-        {/* ── Skynet AI section ── */}
-        <SidebarGroup className="mt-8 p-0">
-          <SidebarGroupLabel className="flex items-center gap-2 px-3 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-600 mb-2">
-            Skynet AI
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-1.5">
-              {navIntelligence.map((item) => {
-                const active = isActive(item.url)
-                return (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton
-                      tooltip={item.title}
-                      className={itemClass(active)}
-                      render={<a href={item.url} />}
-                    >
-                      <item.icon className={iconClass(active)} />
-                      <span className="text-[13px] ml-1">{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {/* ── App switcher ── */}
+        <div className="flex items-center gap-1 bg-[#111318] rounded-xl p-1 mb-5">
+          <a
+            href="/estimator"
+            className={cn(
+              "flex-1 text-center text-[11px] font-bold py-1.5 rounded-lg transition-all",
+              !isTracker && !isHome ? "bg-[#1E56D0] text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+            )}
+          >
+            ESTIMATOR
+          </a>
+          <a
+            href="/tracker"
+            className={cn(
+              "flex-1 text-center text-[11px] font-bold py-1.5 rounded-lg transition-all",
+              isTracker ? "bg-[#1E56D0] text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+            )}
+          >
+            TRACKER
+          </a>
+        </div>
+
+        {isTracker ? (
+          /* ── Tracker navigation ── */
+          <SidebarGroup className="p-0">
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-1.5">
+                {navTracker.map((item) => {
+                  const active = isActive(item.url)
+                  return (
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton
+                        tooltip={item.title}
+                        className={itemClass(active)}
+                        render={<a href={item.url} />}
+                      >
+                        <item.icon className={iconClass(active)} />
+                        <span className="text-[13px] ml-1">{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : (
+          <>
+            {/* ── Estimator main navigation ── */}
+            <SidebarGroup className="p-0">
+              <SidebarGroupContent>
+                <SidebarMenu className="gap-1.5">
+                  {navMain.map((item) => {
+                    const active = isActive(item.url)
+                    return (
+                      <SidebarMenuItem key={item.title}>
+                        <SidebarMenuButton
+                          tooltip={item.title}
+                          className={itemClass(active)}
+                          render={<a href={item.url} />}
+                        >
+                          <item.icon className={iconClass(active)} />
+                          <span className="text-[13px] ml-1">{item.title}</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+
+            {/* ── Skynet AI section ── */}
+            <SidebarGroup className="mt-8 p-0">
+              <SidebarGroupLabel className="flex items-center gap-2 px-3 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-600 mb-2">
+                Skynet AI
+              </SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu className="gap-1.5">
+                  {navIntelligence.map((item) => {
+                    const active = isActive(item.url)
+                    return (
+                      <SidebarMenuItem key={item.title}>
+                        <SidebarMenuButton
+                          tooltip={item.title}
+                          className={itemClass(active)}
+                          render={<a href={item.url} />}
+                        >
+                          <item.icon className={iconClass(active)} />
+                          <span className="text-[13px] ml-1">{item.title}</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </>
+        )}
       </SidebarContent>
 
       <SidebarRail />

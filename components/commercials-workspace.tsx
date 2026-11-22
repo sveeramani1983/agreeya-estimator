@@ -39,13 +39,15 @@ import {
 } from "@/components/ui/alert-dialog"
 import { toast } from "sonner"
 
-import { AdditionalCost, CommercialsConfig, OverheadConfig, Project } from "@/lib/types"
+import { AdditionalCost, BillingMilestone, CommercialsConfig, MilestoneTemplate, OverheadConfig, Project } from "@/lib/types"
+import type { ClientIntelligence } from "@/lib/intelligence"
 import {
   updateAdditionalCost,
   deleteAdditionalCost,
   updateCommercialsConfig,
   updateProject
 } from "@/lib/actions"
+import { PaymentScheduleSection } from "@/components/payment-schedule-section"
 
 const ONSITE_RATE = 150
 
@@ -67,6 +69,9 @@ interface CommercialsWorkspaceProps {
   overheadConfig: OverheadConfig
   constructionHours: number
   contingencyHours: number
+  initialMilestones: BillingMilestone[]
+  templates: MilestoneTemplate[]
+  clientIntelligence?: ClientIntelligence | null
 }
 
 export function CommercialsWorkspace({
@@ -79,6 +84,9 @@ export function CommercialsWorkspace({
   overheadConfig,
   constructionHours,
   contingencyHours,
+  initialMilestones,
+  templates,
+  clientIntelligence,
 }: CommercialsWorkspaceProps) {
   const router = useRouter()
   const [additionalCosts, setAdditionalCosts] = useState<AdditionalCost[]>(initialAdditionalCosts)
@@ -702,7 +710,16 @@ export function CommercialsWorkspace({
             </div>
           </section>
 
-          {/* Section 4: Quote Narrative */}
+          {/* Section 4: Payment Schedule */}
+          <PaymentScheduleSection
+            projectId={projectId}
+            quotedPrice={totals.quotedPrice}
+            project={project}
+            initialMilestones={initialMilestones}
+            templates={templates}
+          />
+
+          {/* Section 5: Quote Narrative */}
           <section className="space-y-4">
             <div className="flex items-center gap-2">
               <FileText className="h-5 w-5 text-sidebar" />
@@ -764,6 +781,21 @@ export function CommercialsWorkspace({
                       <span className="text-sm text-muted-foreground">%</span>
                     </div>
                   </div>
+                  {clientIntelligence?.marginSuggestion !== null && clientIntelligence?.marginSuggestion !== undefined && (
+                    <div className="flex items-center justify-between text-xs rounded-md bg-blue-900/10 border border-blue-800/30 px-3 py-2">
+                      <span className="text-blue-300">
+                        💡 Suggested: <strong>{clientIntelligence.marginSuggestion.toFixed(1)}%</strong>
+                        {' '}({clientIntelligence.won > 0 ? `based on ${clientIntelligence.won} past win${clientIntelligence.won !== 1 ? 's' : ''}` : 'client insight'})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => updateConfig({ margin_percent: Math.round(clientIntelligence.marginSuggestion! * 10) / 10 })}
+                        className="ml-3 shrink-0 rounded-md bg-blue-700 hover:bg-blue-600 px-2.5 py-1 text-[10px] font-semibold text-white transition-colors"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-muted-foreground">Margin Amount</span>
                     <span className="font-semibold text-green-600">${totals.marginAmount.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>

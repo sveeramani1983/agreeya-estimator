@@ -8,8 +8,11 @@ import {
   getOverheadConfig,
   getTotalConstructionHours,
   getWBSConfidenceHours,
+  getBillingMilestones,
+  getMilestoneTemplates,
 } from "@/lib/actions"
 import { CommercialsWorkspace } from "@/components/commercials-workspace"
+import { getClientIntelligence } from "@/lib/intelligence"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -18,7 +21,7 @@ interface PageProps {
 export default async function CommercialsPage({ params }: PageProps) {
   const { id } = await params
 
-  const [project, laborCosts, additionalCosts, config, wbsStats, overheadConfig, constructionHours, contingencyHours] = await Promise.all([
+  const [project, laborCosts, additionalCosts, config, wbsStats, overheadConfig, constructionHours, contingencyHours, milestones, templates] = await Promise.all([
     getProject(id),
     getLaborCosts(id),
     getAdditionalCosts(id),
@@ -27,11 +30,17 @@ export default async function CommercialsPage({ params }: PageProps) {
     getOverheadConfig(id),
     getTotalConstructionHours(id),
     getWBSConfidenceHours(id),
+    getBillingMilestones(id),
+    getMilestoneTemplates(),
   ])
 
   if (!project) {
     notFound()
   }
+
+  const clientIntelligence = project.client_id
+    ? await getClientIntelligence(project.client_id)
+    : null
 
   return (
     <CommercialsWorkspace
@@ -44,6 +53,9 @@ export default async function CommercialsPage({ params }: PageProps) {
       overheadConfig={overheadConfig}
       constructionHours={constructionHours}
       contingencyHours={contingencyHours}
+      initialMilestones={milestones}
+      templates={templates}
+      clientIntelligence={clientIntelligence}
     />
   )
 }

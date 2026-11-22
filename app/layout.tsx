@@ -9,6 +9,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ClerkProvider } from "@clerk/nextjs";
 import { SaveStatusProvider } from "@/components/save-status-context";
 import { ThemeProvider } from "@/lib/theme-context";
+import { headers } from "next/headers";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -25,11 +26,24 @@ export const metadata: Metadata = {
   description: "Modern estimation tool for internal business use.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const headersList = await headers()
+  const isPdf = headersList.get("x-is-pdf") === "1"
+
+  if (isPdf) {
+    return (
+      <html lang="en">
+        <body style={{ margin: 0, padding: 0, background: "white" }}>
+          {children}
+        </body>
+      </html>
+    )
+  }
+
   return (
     <ClerkProvider>
       <html lang="en" className="h-full antialiased" suppressHydrationWarning>
