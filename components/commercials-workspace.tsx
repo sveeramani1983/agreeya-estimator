@@ -45,9 +45,12 @@ import {
   updateAdditionalCost,
   deleteAdditionalCost,
   updateCommercialsConfig,
-  updateProject
+  updateProject,
+  applyCommercialsPlan,
 } from "@/lib/actions"
 import { PaymentScheduleSection } from "@/components/payment-schedule-section"
+import { CommercialsAIPanel } from "@/components/commercials-ai-panel"
+import { CommercialsRecommendationData } from "@/app/api/projects/[id]/ai-recommend/route"
 
 const ONSITE_RATE = 150
 
@@ -98,6 +101,44 @@ export function CommercialsWorkspace({
   const [saving, setSaving] = useState(false)
   const saveCount = useRef(0)
   const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [aiAppliedFields, setAiAppliedFields] = useState<Set<"margin" | "narrative">>(new Set())
+
+  const handleApplyAICommercials = async (
+    recommendation: CommercialsRecommendationData,
+    applyMilestones: boolean
+  ) => {
+    try {
+      const configUpdates = {
+        margin_percent: recommendation.targetMarginPercent,
+        quote_narrative: recommendation.quoteNarrative,
+      }
+
+      const milestonesPayload = applyMilestones
+        ? recommendation.preliminaryMilestones.map((m) => ({
+            title: m.title,
+            trigger_type: m.trigger_type,
+            percentage: m.percentage,
+            description: m.description,
+            deliverables: m.deliverables,
+          }))
+        : undefined
+
+      await applyCommercialsPlan(projectId, configUpdates, milestonesPayload)
+
+      setConfig((prev) => ({
+        ...prev,
+        margin_percent: recommendation.targetMarginPercent,
+        quote_narrative: recommendation.quoteNarrative,
+      }))
+
+      setAiAppliedFields(new Set(["margin", "narrative"]))
+      router.refresh()
+    } catch (err) {
+      console.error("Failed to apply commercials plan:", err)
+      toast.error("Failed to apply commercials plan")
+      throw err
+    }
+  }
 
   const [expanded, setExpanded] = useState({
     res: true,
@@ -317,6 +358,13 @@ export function CommercialsWorkspace({
   }
 
   const updateConfig = (updates: Partial<CommercialsConfig>) => {
+    setAiAppliedFields(prev => {
+      if (prev.size === 0) return prev
+      const next = new Set(prev)
+      if (updates.margin_percent !== undefined) next.delete("margin")
+      if (updates.quote_narrative !== undefined) next.delete("narrative")
+      return next
+    })
     if (updates.margin_percent !== undefined) {
       if (updates.margin_percent < 0) updates.margin_percent = 0
       if (updates.margin_percent > 100) {
@@ -357,6 +405,15 @@ export function CommercialsWorkspace({
           {saving ? <><Save className="h-3 w-3 animate-pulse" /> Saving...</> : <><CheckCircle2 className="h-3 w-3 text-green-500" /> Saved</>}
         </div>
       </div>
+
+      {/* ── AI Commercials Assistant Panel ───────────────────── */}
+      <CommercialsAIPanel
+        projectId={projectId}
+        constructionHours={constructionHours}
+        loadedLaborCost={totals.loadedLaborCost}
+        loadedLaborHours={totals.loadedLaborHours}
+        onApplyRecommendations={handleApplyAICommercials}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left: Detail Tables */}
@@ -721,9 +778,16 @@ export function CommercialsWorkspace({
 
           {/* Section 5: Quote Narrative */}
           <section className="space-y-4">
-            <div className="flex items-center gap-2">
-              <FileText className="h-5 w-5 text-sidebar" />
-              <h3 className="text-lg font-semibold">Quote Narrative</h3>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileText className="h-5 w-5 text-sidebar" />
+                <h3 className="text-lg font-semibold">Quote Narrative</h3>
+              </div>
+              {aiAppliedFields.has("narrative") && (
+                <Badge variant="outline" className="h-5 px-1.5 text-[10px] bg-purple-900/30 text-purple-300 border-purple-500/40 shrink-0 gap-1 font-semibold">
+                  ✨ AI
+                </Badge>
+              )}
             </div>
             <Card>
               <CardContent className="pt-6">
@@ -768,7 +832,14 @@ export function CommercialsWorkspace({
               {!config.rates_include_margin && (
                 <div className="space-y-4 p-4 rounded-lg bg-[#0D1526] border border-dashed border-[#1E2D45] transition-all">
                   <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium">Margin %</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium">Margin %</span>
+                      {aiAppliedFields.has("margin") && (
+                        <Badge variant="outline" className="h-5 px-1.5 text-[10px] bg-purple-900/30 text-purple-300 border-purple-500/40 shrink-0 gap-1 font-semibold">
+                          ✨ AI
+                        </Badge>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
                       <Input
                         type="number"

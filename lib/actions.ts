@@ -514,6 +514,144 @@ export async function updateManyResourceLoading(items: ResourceLoading[]) {
   }
 }
 
+export async function applyStaffingPlan(
+  projectId: string,
+  resources: Resource[],
+  loading: ResourceLoading[]
+) {
+  try {
+    const db = getDb();
+    const insertResource = db.prepare(`
+      INSERT INTO resources (id, project_id, name, role, rate_per_hour, allocation_start, allocation_end, location)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertLoading = db.prepare(`
+      INSERT INTO resource_loading (id, resource_id, project_id, period_label, hours)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    const transaction = db.transaction(() => {
+      db.prepare("DELETE FROM resource_loading WHERE project_id = ?").run(projectId);
+      db.prepare("DELETE FROM resources WHERE project_id = ?").run(projectId);
+
+      for (const r of resources) {
+        insertResource.run(
+          r.id,
+          projectId,
+          r.name,
+          r.role,
+          r.rate_per_hour,
+          r.allocation_start,
+          r.allocation_end,
+          r.location ?? "onsite"
+        );
+      }
+
+      for (const l of loading) {
+        if (l.hours > 0) {
+          insertLoading.run(l.id, l.resource_id, projectId, l.period_label, l.hours);
+        }
+      }
+    });
+
+    transaction();
+    revalidatePath(`/projects/${projectId}/resources`);
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to apply staffing plan:", error);
+    throw error;
+  }
+}
+
+export async function applyCommercialsPlan(
+  projectId: string,
+  configUpdates: {
+    margin_percent: number;
+    quote_narrative: string;
+  },
+  milestones?: Array<{
+    title: string;
+    trigger_type: string;
+    percentage: number;
+    description: string;
+    deliverables?: string;
+  }>
+) {
+  try {
+    const db = getDb();
+    const transaction = db.transaction(() => {
+      // 1. Update or Insert Commercials Config
+      const existing = db.prepare("SELECT id FROM commercials_config WHERE project_id = ?").get(projectId) as { id: string } | undefined;
+      if (existing) {
+        db.prepare("UPDATE commercials_config SET margin_percent = ?, quote_narrative = ? WHERE project_id = ?").run(
+          configUpdates.margin_percent,
+          configUpdates.quote_narrative,
+          projectId
+        );
+      } else {
+        db.prepare("INSERT INTO commercials_config (id, project_id, margin_percent, quote_narrative) VALUES (?, ?, ?, ?)").run(
+          uuidv4(),
+          projectId,
+          configUpdates.margin_percent,
+          configUpdates.quote_narrative
+        );
+      }
+
+      // 2. If milestones are provided, insert them
+      if (milestones && milestones.length > 0) {
+        db.prepare("DELETE FROM billing_milestones WHERE project_id = ?").run(projectId);
+        
+        // Deterministic quoted price calculation for milestone amounts
+        const laborCost = db.prepare(`
+          SELECT COALESCE(SUM(l.hours * r.rate_per_hour), 0) as total
+          FROM resources r
+          LEFT JOIN resource_loading l ON l.resource_id = r.id AND l.project_id = r.project_id
+          WHERE r.project_id = ?
+        `).get(projectId) as { total: number } | undefined;
+
+        const addCost = db.prepare(`
+          SELECT COALESCE(SUM(CASE WHEN cost_type = 'monthly' THEN amount * duration_months ELSE amount END), 0) as total
+          FROM additional_costs WHERE project_id = ?
+        `).get(projectId) as { total: number } | undefined;
+
+        const subtotal = (laborCost?.total || 0) + (addCost?.total || 0);
+        const quotedPrice = subtotal * (1 + configUpdates.margin_percent / 100);
+
+        const insertMilestone = db.prepare(`
+          INSERT INTO billing_milestones (
+            id, project_id, title, description, deliverables, percentage, amount,
+            invoice_status, payment_terms, trigger_type, sort_order
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'not_invoiced', 30, ?, ?)
+        `);
+
+        let sortOrder = 0;
+        for (const m of milestones) {
+          const mAmount = Math.round(quotedPrice * (m.percentage / 100));
+          insertMilestone.run(
+            uuidv4(),
+            projectId,
+            m.title,
+            m.description || null,
+            m.deliverables || null,
+            m.percentage,
+            mAmount,
+            m.trigger_type || "milestone",
+            sortOrder++
+          );
+        }
+      }
+    });
+
+    transaction();
+    revalidatePath(`/projects/${projectId}/commercials`);
+    revalidatePath(`/projects/${projectId}/summary`);
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to apply commercials plan:", error);
+    throw error;
+  }
+}
+
 export async function getAdditionalCosts(projectId: string) {
   try {
     const db = getDb();

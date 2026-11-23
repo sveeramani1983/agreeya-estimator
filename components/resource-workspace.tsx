@@ -49,6 +49,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 
 import { Resource, ResourceLoading, RateCardItem, Project } from "@/lib/types"
@@ -59,7 +60,10 @@ import {
   deleteManyResourceLoading,
   clearAllResourceLoading,
   updateProject,
+  applyStaffingPlan,
 } from "@/lib/actions"
+import { ResourceAIPanel } from "@/components/resource-ai-panel"
+import { ResourceRecommendationData } from "@/app/api/projects/[id]/ai-recommend/route"
 
 function roundToNearest10(n: number): number {
   return Math.round(n / 10) * 10
@@ -112,6 +116,7 @@ export function ResourceWorkspace({
   const saveTid = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [applyTimelineOpen, setApplyTimelineOpen] = useState(false)
+  const [aiAppliedResourceIds, setAiAppliedResourceIds] = useState<Set<string>>(new Set())
 
   // Onsite/Offshore toggle state
   const [rateOverrides, setRateOverrides] = useState<Record<string, boolean>>({})
@@ -329,6 +334,55 @@ export function ResourceWorkspace({
     return { onsite: onsiteResources.length, offshore: offshoreResources.length, onsiteHours, offshoreHours, onsiteCost, offshoreCost, totalHours, totalCost, blendedRate }
   }, [resources, totals.rowTotals])
 
+  // Handle applying AI Staffing recommendations
+  const handleApplyAIStaffing = async (recommendation: ResourceRecommendationData) => {
+    try {
+      const newResources: Resource[] = []
+      const newLoading: ResourceLoading[] = []
+      const newAiIds = new Set<string>()
+
+      for (const staff of recommendation.staffing) {
+        const resId = uuidv4()
+        newAiIds.add(resId)
+
+        newResources.push({
+          id: resId,
+          project_id: projectId,
+          name: staff.name,
+          role: staff.role,
+          location: staff.location,
+          rate_per_hour: staff.rate_per_hour,
+          allocation_start: staff.allocation_start || timelineStart,
+          allocation_end: staff.allocation_end || effectiveTimelineEnd,
+        })
+
+        if (staff.period_loading) {
+          for (const [periodKey, hours] of Object.entries(staff.period_loading)) {
+            if (hours > 0) {
+              newLoading.push({
+                id: uuidv4(),
+                resource_id: resId,
+                project_id: projectId,
+                period_label: periodKey,
+                hours: hours,
+              })
+            }
+          }
+        }
+      }
+
+      await applyStaffingPlan(projectId, newResources, newLoading)
+      setResources(newResources)
+      setLoadingData(newLoading)
+      setAiAppliedResourceIds(newAiIds)
+      toast.success(`Applied AI staffing plan: ${newResources.length} roles created`)
+    } catch (err) {
+      console.error("Failed to apply AI staffing plan:", err)
+      toast.error("Failed to apply AI staffing plan")
+      throw err
+    }
+  }
+
   // Auto-save roster
   const debouncedSaveRoster = useCallback(
     debounce((allResources: Resource[]) => {
@@ -414,6 +468,12 @@ export function ResourceWorkspace({
   }
 
   const handleResourceUpdate = (id: string, updates: Partial<Resource>) => {
+    setAiAppliedResourceIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
     setResources((prev) => {
       const next = prev.map((r) => {
         if (r.id !== id) return r
@@ -436,6 +496,12 @@ export function ResourceWorkspace({
 
   // Manual rate edit — marks as overridden
   const handleRateChange = (resourceId: string, rate: number) => {
+    setAiAppliedResourceIds((prev) => {
+      if (!prev.has(resourceId)) return prev
+      const next = new Set(prev)
+      next.delete(resourceId)
+      return next
+    })
     setRateOverrides(prev => ({ ...prev, [resourceId]: true }))
     setResources(prev => {
       const next = prev.map(r => r.id === resourceId ? { ...r, rate_per_hour: Math.max(0, rate) } : r)
@@ -448,6 +514,13 @@ export function ResourceWorkspace({
   const handleLocationToggle = (resourceId: string, targetLocation: 'onsite' | 'offshore') => {
     const res = resources.find(r => r.id === resourceId)
     if (!res || res.location === targetLocation) return
+
+    setAiAppliedResourceIds((prev) => {
+      if (!prev.has(resourceId)) return prev
+      const next = new Set(prev)
+      next.delete(resourceId)
+      return next
+    })
 
     // Look up the role-specific rate for the target location
     const rateEntry = rateCard.find(rc => rc.role_title === res.role)
@@ -469,6 +542,12 @@ export function ResourceWorkspace({
   const confirmLocationSwitch = (updateRate: boolean) => {
     if (!locationSwitchPending) return
     const { resourceId, targetLocation, standardRate } = locationSwitchPending
+    setAiAppliedResourceIds((prev) => {
+      if (!prev.has(resourceId)) return prev
+      const next = new Set(prev)
+      next.delete(resourceId)
+      return next
+    })
     setResources(prev => {
       const next = prev.map(r => {
         if (r.id !== resourceId) return r
@@ -521,6 +600,12 @@ export function ResourceWorkspace({
 
   // Loading grid handlers
   const handleLoadingChange = (resourceId: string, periodKey: string, hours: number) => {
+    setAiAppliedResourceIds((prev) => {
+      if (!prev.has(resourceId)) return prev
+      const next = new Set(prev)
+      next.delete(resourceId)
+      return next
+    })
     const safeHours = Math.max(0, hours)
     const existingIndex = loadingData.findIndex(
       (l) => l.resource_id === resourceId && l.period_label === periodKey
@@ -558,6 +643,12 @@ export function ResourceWorkspace({
   const defaultHours = periodType === "weekly" ? 40 : 170
 
   const handleAutoFillRow = (resourceId: string) => {
+    setAiAppliedResourceIds((prev) => {
+      if (!prev.has(resourceId)) return prev
+      const next = new Set(prev)
+      next.delete(resourceId)
+      return next
+    })
     const newItems: ResourceLoading[] = []
     let newLoading = [...loadingData]
 
@@ -595,6 +686,7 @@ export function ResourceWorkspace({
   }
 
   const handleAutoFillAll = () => {
+    setAiAppliedResourceIds(new Set())
     const newItems: ResourceLoading[] = []
     let newLoading = [...loadingData]
 
@@ -789,16 +881,18 @@ export function ResourceWorkspace({
   const currentWeeklyPace = timelineWeeks > 0 ? totals.grandTotal / timelineWeeks : 0
 
   const validationStatus =
-    coverage >= 95
-      ? { icon: "🟢", text: "Resource plan fully covers the estimated effort." }
+    coverage >= 95 && coverage <= 105
+      ? { icon: "🟢", text: "Resource plan matches estimated effort within target tolerance (95% - 105%)." }
+      : coverage > 105
+      ? { icon: "⚠️", text: `Resource plan exceeds estimated effort by ${(coverage - 100).toFixed(1)}% (${(totals.grandTotal - totalEstimatedHours).toFixed(1)} hrs over-allocated). Review loading.` }
       : coverage >= 85
-      ? { icon: "🟡", text: "You are within 15% of target. Review before finalizing." }
-      : { icon: "🔴", text: `You are ${Math.abs(shortfall).toFixed(1)} hours short. Add capacity or extend the timeline.` }
+      ? { icon: "⚠️", text: `Resource plan is under-allocated by ${(100 - coverage).toFixed(1)}% (${(totalEstimatedHours - totals.grandTotal).toFixed(1)} hrs short). Review before finalizing.` }
+      : { icon: "🔴", text: `Resource plan is significantly under-allocated (${shortfall.toFixed(1)} hrs short). Add capacity or adjust allocations.` }
 
   const cardBorder =
-    coverage >= 95
+    coverage >= 95 && coverage <= 105
       ? "border-l-green-500"
-      : coverage >= 85
+      : coverage >= 85 && coverage <= 115
       ? "border-l-yellow-500"
       : "border-l-red-500"
 
@@ -808,6 +902,16 @@ export function ResourceWorkspace({
   return (
     <TooltipProvider>
       <div className="space-y-10 pb-20">
+
+        {/* ── AI Staffing Assistant Panel ───────────────────────── */}
+        <ResourceAIPanel
+          projectId={projectId}
+          totalEstimatedHours={totalEstimatedHours}
+          timelineStart={timelineStart}
+          effectiveTimelineEnd={effectiveTimelineEnd}
+          rateCardCount={rateCard.length}
+          onApplyRecommendations={handleApplyAIStaffing}
+        />
 
         {/* ── Project Timeline ─────────────────────────────────── */}
         <section>
@@ -1047,11 +1151,18 @@ export function ResourceWorkspace({
                   return (
                     <TableRow key={res.id}>
                       <TableCell>
-                        <Input
-                          value={res.name}
-                          onChange={(e) => handleResourceUpdate(res.id, { name: e.target.value })}
-                          className="h-8 border-none bg-transparent focus-visible:ring-1"
-                        />
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            value={res.name}
+                            onChange={(e) => handleResourceUpdate(res.id, { name: e.target.value })}
+                            className="h-8 border-none bg-transparent focus-visible:ring-1"
+                          />
+                          {aiAppliedResourceIds.has(res.id) && (
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px] bg-purple-900/30 text-purple-300 border-purple-500/40 shrink-0 gap-1 font-semibold">
+                              ✨ AI
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <Select
@@ -1181,6 +1292,17 @@ export function ResourceWorkspace({
 
         {/* ── Loading Grid ──────────────────────────────────────── */}
         <section className="space-y-4">
+          {/* Budget Tolerance Warning Banner */}
+          {totals.grandTotal > 0 && totalEstimatedHours > 0 && (coverage < 95 || coverage > 105) && (
+            <div className="flex items-center gap-2.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+              <div>
+                <strong>Staffing Budget Warning: </strong>
+                Loaded hours ({totals.grandTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })} hrs) are {coverage > 105 ? `${(coverage - 100).toFixed(1)}% above` : `${(100 - coverage).toFixed(1)}% below`} the authoritative estimated effort ({totalEstimatedHours.toLocaleString(undefined, { maximumFractionDigits: 0 })} hrs). Recommended coverage is 95% – 105%. Manual adjustments are preserved.
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <Calendar className="h-5 w-5 text-sidebar" />
@@ -1272,6 +1394,11 @@ export function ResourceWorkspace({
                           <span className={`shrink-0 inline-flex items-center rounded px-1 py-0.5 text-[9px] font-bold ${res.location === 'offshore' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>
                             {res.location === 'offshore' ? 'OFF' : 'ON'}
                           </span>
+                          {aiAppliedResourceIds.has(res.id) && (
+                            <span className="shrink-0 inline-flex items-center rounded px-1 py-0.5 text-[9px] font-bold bg-purple-900/30 text-purple-300 border border-purple-500/40">
+                              ✨ AI
+                            </span>
+                          )}
                         </div>
                         <Tooltip>
                           <TooltipTrigger asChild>
