@@ -7,12 +7,15 @@ import {
   CheckCircle, CheckCircle2, XCircle, Clock, BarChart2,
   ChevronDown, ChevronRight, Copy, Download, Loader2,
   Target, HelpCircle, Shield, ClipboardList, X, Filter,
+  FolderPlus, FolderOpen,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -22,7 +25,7 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { saveRfpAnalysis, importWBSFromRFP, SuggestedWBSComponent } from "@/lib/actions"
+import { saveRfpAnalysis, importWBSFromRFP, createProject, SuggestedWBSComponent } from "@/lib/actions"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -485,17 +488,42 @@ function WBSTab({
   analysis,
   projects,
   onImported,
+  projectName,
+  setProjectName,
+  onProjectCreated,
 }: {
   analysis: RFPAnalysis
   projects: ProjectRef[]
   onImported: () => void
+  projectName: string
+  setProjectName: (name: string) => void
+  onProjectCreated?: (project: ProjectRef) => void
 }) {
   const router = useRouter()
   const wbs = analysis.suggestedWBS || []
   const [selected, setSelected] = useState<Set<number>>(new Set(wbs.map((_, i) => i)))
   const [importOpen, setImportOpen] = useState(false)
-  const [targetProject, setTargetProject] = useState("")
+  const [importMode, setImportMode] = useState<"new" | "existing">("new")
+  const [targetProject, setTargetProject] = useState(projects[0]?.id || "")
+  const [newProjectName, setNewProjectName] = useState(projectName || analysis.projectTitle || "")
+  const [newClientName, setNewClientName] = useState(analysis.clientName || "")
   const [importing, setImporting] = useState(false)
+
+  // Re-sync selected items when analysis changes
+  useEffect(() => {
+    setSelected(new Set((analysis.suggestedWBS || []).map((_, i) => i)))
+  }, [analysis])
+
+  // Sync state when dialog opens
+  useEffect(() => {
+    if (importOpen) {
+      setNewProjectName(projectName || analysis.projectTitle || "")
+      setNewClientName(analysis.clientName || "")
+      if (projects.length === 0) {
+        setImportMode("new")
+      }
+    }
+  }, [importOpen, projectName, analysis.projectTitle, analysis.clientName, projects.length])
 
   const allSelected = selected.size === wbs.length
   const libraryMatchedCount = wbs.filter((c) => c.source === "library" || !!c.libraryComponentId).length
@@ -511,16 +539,52 @@ function WBSTab({
     })
 
   const handleImport = async () => {
-    if (!targetProject) return
     const components = Array.from(selected).map((i) => wbs[i])
+    if (components.length === 0) {
+      toast.error("No components selected for import")
+      return
+    }
+
     setImporting(true)
     try {
-      await importWBSFromRFP(targetProject, components)
-      toast.success(`Imported ${components.length} components to project`)
+      let finalProjectId = targetProject
+      if (importMode === "new") {
+        const trimmedName = newProjectName.trim()
+        if (!trimmedName) {
+          toast.error("Please enter a project name")
+          setImporting(false)
+          return
+        }
+        const clientVal = newClientName.trim() || analysis.clientName || "General Client"
+        const created = await createProject({
+          name: trimmedName,
+          client_name: clientVal,
+          description: analysis.summary || undefined,
+        })
+        finalProjectId = created.id
+        setProjectName(trimmedName)
+        if (onProjectCreated) {
+          onProjectCreated({ id: created.id, name: trimmedName, client_name: clientVal })
+        }
+      } else {
+        if (!finalProjectId) {
+          toast.error("Please select an existing project")
+          setImporting(false)
+          return
+        }
+      }
+
+      await importWBSFromRFP(finalProjectId, components)
+      toast.success(
+        importMode === "new"
+          ? `Created project "${newProjectName.trim()}" and imported ${components.length} components`
+          : `Imported ${components.length} components to project`
+      )
       setImportOpen(false)
       onImported()
-      router.push(`/projects/${targetProject}/estimate`)
-    } catch {
+      router.push(`/projects/${finalProjectId}/estimate`)
+    } catch (err) {
+      console.error("[RFP Import] Error:", err)
       toast.error("Import failed")
     } finally {
       setImporting(false)
@@ -637,29 +701,117 @@ function WBSTab({
           <DialogHeader>
             <DialogTitle>Import to Project WBS</DialogTitle>
           </DialogHeader>
+
           <div className="space-y-4 py-2">
             <p className="text-sm text-muted-foreground">
-              Select the project to import {selected.size} WBS component{selected.size !== 1 ? "s" : ""} into.
+              Import {selected.size} WBS component{selected.size !== 1 ? "s" : ""} into a new or existing project.
             </p>
-            <Select value={targetProject} onValueChange={(v) => v !== null && setTargetProject(v)}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select Project…" />
-              </SelectTrigger>
-              <SelectContent>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name} <span className="text-muted-foreground ml-1">— {p.client_name}</span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+
+            {/* Mode Selector */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-[#0D1526] rounded-lg border border-[#1E2D45]">
+              <button
+                type="button"
+                onClick={() => setImportMode("new")}
+                className={`py-1.5 px-3 text-xs font-medium rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                  importMode === "new"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-[#94A3B8] hover:text-white"
+                }`}
+              >
+                <FolderPlus className="h-3.5 w-3.5" />
+                Create New Project
+              </button>
+              <button
+                type="button"
+                onClick={() => setImportMode("existing")}
+                disabled={projects.length === 0}
+                className={`py-1.5 px-3 text-xs font-medium rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                  importMode === "existing"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-[#94A3B8] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                }`}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                Existing Project ({projects.length})
+              </button>
+            </div>
+
+            {importMode === "new" ? (
+              <div className="space-y-3 pt-1">
+                <div className="space-y-1.5">
+                  <Label htmlFor="import-new-proj-name" className="text-xs font-medium text-[#94A3B8]">
+                    Project Name <span className="text-red-400">*</span>
+                  </Label>
+                  <Input
+                    id="import-new-proj-name"
+                    placeholder="e.g. Acme Cloud Migration"
+                    value={newProjectName}
+                    onChange={(e) => {
+                      setNewProjectName(e.target.value)
+                      setProjectName(e.target.value)
+                    }}
+                    className="bg-[#0D1526] border-[#1E2D45] text-sm h-9 text-foreground"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="import-new-client-name" className="text-xs font-medium text-[#94A3B8]">
+                    Client Name
+                  </Label>
+                  <Input
+                    id="import-new-client-name"
+                    placeholder="e.g. Acme Corporation"
+                    value={newClientName}
+                    onChange={(e) => setNewClientName(e.target.value)}
+                    className="bg-[#0D1526] border-[#1E2D45] text-sm h-9 text-foreground"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2 pt-1">
+                <Label htmlFor="import-existing-proj" className="text-xs font-medium text-[#94A3B8]">
+                  Select Existing Project <span className="text-red-400">*</span>
+                </Label>
+                <Select value={targetProject} onValueChange={(v) => v !== null && setTargetProject(v)}>
+                  <SelectTrigger id="import-existing-proj" className="bg-[#0D1526] border-[#1E2D45] h-9 text-sm">
+                    <SelectValue placeholder="Select Project…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name} <span className="text-muted-foreground ml-1">— {p.client_name}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {projects.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No existing projects found.</p>
+                )}
+              </div>
+            )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importing}>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importing} className="border-[#1E2D45]">
               Cancel
             </Button>
-            <Button onClick={handleImport} disabled={!targetProject || importing} className="bg-blue-600 text-white hover:bg-blue-700">
-              {importing ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Importing…</> : "Confirm Import"}
+            <Button
+              onClick={handleImport}
+              disabled={
+                importing ||
+                (importMode === "new" ? !newProjectName.trim() : !targetProject)
+              }
+              className="bg-blue-600 text-white hover:bg-blue-700"
+            >
+              {importing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {importMode === "new" ? "Creating & Importing…" : "Importing…"}
+                </>
+              ) : importMode === "new" ? (
+                "Create Project & Import"
+              ) : (
+                "Confirm Import"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -848,6 +1000,8 @@ export function RFPAnalyzerClient({
   initialAnalyses: AnalysisRecord[]
   projects: ProjectRef[]
 }) {
+  const [projectList, setProjectList] = useState<ProjectRef[]>(projects)
+  const [projectName, setProjectName] = useState("")
   const [activeInputTab, setActiveInputTab] = useState<"file" | "text">("file")
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [pastedText, setPastedText] = useState("")
@@ -921,6 +1075,11 @@ export function RFPAnalyzerClient({
       setAnalysisFilename(data.filename || selectedFile?.name || "pasted-text.txt")
       setTruncated(data.truncated || false)
 
+      // Pre-fill Project Name from AI-extracted project title if user hasn't specified one
+      if (!projectName.trim() && data.analysis?.projectTitle) {
+        setProjectName(data.analysis.projectTitle)
+      }
+
       // Persist to DB silently
       try {
         const id = await saveRfpAnalysis({
@@ -948,8 +1107,12 @@ export function RFPAnalyzerClient({
 
   const loadFromHistory = (record: AnalysisRecord) => {
     try {
-      setAnalysis(JSON.parse(record.analysis_json))
+      const parsed = JSON.parse(record.analysis_json)
+      setAnalysis(parsed)
       setAnalysisFilename(record.filename || "unknown")
+      if (parsed.projectTitle) {
+        setProjectName(parsed.projectTitle)
+      }
       setActiveResultTab("overview")
     } catch {
       toast.error("Could not load saved analysis")
@@ -977,6 +1140,20 @@ export function RFPAnalyzerClient({
               <CardTitle className="text-base font-semibold text-foreground">Upload RFP Document</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Optional Project Name */}
+              <div className="space-y-1.5">
+                <Label htmlFor="rfp-project-name" className="text-xs font-medium text-[#94A3B8]">
+                  Project Name <span className="text-muted-foreground font-normal">(optional)</span>
+                </Label>
+                <Input
+                  id="rfp-project-name"
+                  placeholder="e.g., Enterprise Cloud Migration"
+                  value={projectName}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  className="bg-[#0D1526] border-[#1E2D45] text-sm h-9 text-foreground placeholder:text-muted-foreground/60"
+                />
+              </div>
+
               {/* Tab toggle */}
               <div className="flex border-b border-[#1E2D45]">
                 {(["file", "text"] as const).map((tab) => (
@@ -1128,7 +1305,7 @@ export function RFPAnalyzerClient({
               <Loader2 className="h-12 w-12 animate-spin text-blue-400" />
               <div>
                 <p className="text-base font-semibold text-foreground">{LOADING_MESSAGES[loadingMsg]}</p>
-                <p className="text-sm text-muted-foreground mt-1">Gemini Flash is analyzing your RFP…</p>
+                <p className="text-sm text-muted-foreground mt-1">AI is analyzing your RFP…</p>
               </div>
             </div>
           )}
@@ -1172,7 +1349,14 @@ export function RFPAnalyzerClient({
                   <RequirementsTab analysis={analysis} />
                 </TabsContent>
                 <TabsContent value="wbs" className="mt-4">
-                  <WBSTab analysis={analysis} projects={projects} onImported={() => {}} />
+                  <WBSTab
+                    analysis={analysis}
+                    projects={projectList}
+                    onImported={() => {}}
+                    projectName={projectName}
+                    setProjectName={setProjectName}
+                    onProjectCreated={(newProj) => setProjectList((prev) => [newProj, ...prev])}
+                  />
                 </TabsContent>
                 <TabsContent value="redflags" className="mt-4">
                   <RedFlagsTab analysis={analysis} />

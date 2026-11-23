@@ -2,9 +2,13 @@ import { getDb } from "@/lib/db"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB
 const MAX_TEXT_LENGTH = 25000
-const GEMINI_TIMEOUT_MS = 60_000 // 60 seconds per attempt
-const GEMINI_MAX_ATTEMPTS = 2 // Initial attempt + 1 retry
-const GEMINI_RETRY_BACKOFF_MS = 2_000 // 2 seconds backoff before retry
+const NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+const NVIDIA_MODEL_ID = "minimaxai/minimax-m3.1-flash"
+const NVIDIA_TIMEOUT_MS = 60_000 // 60 seconds initial / stall timeout per attempt
+const NVIDIA_MAX_TOTAL_ATTEMPT_MS = 180_000 // 180 seconds hard ceiling per attempt while actively streaming
+const NVIDIA_MAX_ATTEMPTS = 2 // Initial attempt + 1 retry
+const NVIDIA_RETRY_BACKOFF_MS = 2_000 // 2 seconds backoff before retry
+const NVIDIA_MAX_TOKENS = 8192
 const TRANSIENT_HTTP_STATUSES = new Set([429, 500, 502, 503, 504])
 
 interface LibraryComponentRow {
@@ -281,33 +285,51 @@ function reconcileSuggestedWBS(rawWbs: any[], libraryItems: LibraryComponentRow[
   })
 }
 
-// ── Gemini Resilience Helpers ─────────────────────────────────────────────────
+// ── NVIDIA NIM Resilience Helpers ─────────────────────────────────────────────
 
-class GeminiTimeoutError extends Error {
+class NvidiaTimeoutError extends Error {
   constructor(timeoutMs: number) {
-    super(`Gemini request timed out after ${timeoutMs}ms`)
-    this.name = "GeminiTimeoutError"
+    super(`NVIDIA NIM request timed out after ${timeoutMs}ms`)
+    this.name = "NvidiaTimeoutError"
   }
 }
 
-function classifyGeminiError(err: unknown): {
-  category: "TIMEOUT" | "HTTP_TRANSIENT" | "GEMINI_API_ERROR"
+class NvidiaHttpError extends Error {
+  status: number
+  statusText: string
+
+  constructor(status: number, statusText: string, detailMessage: string) {
+    super(`NVIDIA NIM HTTP ${status} (${statusText}): ${detailMessage}`)
+    this.name = "NvidiaHttpError"
+    this.status = status
+    this.statusText = statusText
+  }
+}
+
+function redactSecrets(text: string): string {
+  let safe = text
+  const nvidiaKey = process.env.NVIDIA_API_KEY
+  if (nvidiaKey) {
+    safe = safe.split(nvidiaKey).join("[REDACTED]")
+  }
+  return safe
+}
+
+function classifyNvidiaError(err: unknown): {
+  category: "TIMEOUT" | "HTTP_TRANSIENT" | "NETWORK_TRANSIENT" | "NVIDIA_API_ERROR"
   httpStatus: number | null
   statusText: string | null
   isTransient: boolean
   message: string
 } {
   const rawMessage = err instanceof Error ? err.message : String(err)
-  const apiKey = process.env.GEMINI_API_KEY
-  const safeMessage = apiKey ? rawMessage.split(apiKey).join("[REDACTED]") : rawMessage
+  const safeMessage = redactSecrets(rawMessage)
   const errName = err instanceof Error ? err.name : "UnknownError"
 
-  // Check for timeout / abort
   const isTimeout =
-    err instanceof GeminiTimeoutError ||
-    errName === "GoogleGenerativeAIAbortError" ||
+    err instanceof NvidiaTimeoutError ||
     errName === "AbortError" ||
-    /timed out|Request aborted/i.test(safeMessage)
+    /timed out|aborted/i.test(safeMessage)
 
   if (isTimeout) {
     return {
@@ -319,71 +341,193 @@ function classifyGeminiError(err: unknown): {
     }
   }
 
-  // Extract HTTP status from GoogleGenerativeAIFetchError or message pattern "[429 Too Many Requests]"
-  const rawStatus =
-    typeof (err as { status?: unknown })?.status === "number"
-      ? ((err as { status: number }).status)
-      : (() => {
-          const match = safeMessage.match(/\[(\d{3})\s+([^\]]*)\]/)
-          return match ? Number(match[1]) : null
-        })()
-
-  const statusText =
-    typeof (err as { statusText?: unknown })?.statusText === "string"
-      ? ((err as { statusText: string }).statusText)
-      : null
-
-  if (rawStatus !== null && TRANSIENT_HTTP_STATUSES.has(rawStatus)) {
+  if (err instanceof NvidiaHttpError) {
+    const isTransient = TRANSIENT_HTTP_STATUSES.has(err.status)
     return {
-      category: "HTTP_TRANSIENT",
-      httpStatus: rawStatus,
-      statusText,
+      category: isTransient ? "HTTP_TRANSIENT" : "NVIDIA_API_ERROR",
+      httpStatus: err.status,
+      statusText: err.statusText,
+      isTransient,
+      message: safeMessage,
+    }
+  }
+
+  if (/fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(safeMessage)) {
+    return {
+      category: "NETWORK_TRANSIENT",
+      httpStatus: null,
+      statusText: null,
       isTransient: true,
       message: safeMessage,
     }
   }
 
   return {
-    category: "GEMINI_API_ERROR",
-    httpStatus: rawStatus,
-    statusText,
+    category: "NVIDIA_API_ERROR",
+    httpStatus: null,
+    statusText: null,
     isTransient: false,
     message: safeMessage,
   }
 }
 
-async function generateWithTimeout(
-  model: {
-    generateContent: (
-      request: Array<{ text: string }>,
-      requestOptions?: { timeout?: number; signal?: AbortSignal }
-    ) => Promise<{ response: { text: () => string } }>
-  },
+async function callNvidiaWithTimeout(
+  apiKey: string,
   promptText: string,
   timeoutMs: number
 ): Promise<string> {
   const controller = new AbortController()
-  let timer: ReturnType<typeof setTimeout> | null = null
+  let stallTimer: ReturnType<typeof setTimeout> | null = null
+  let hardTimer: ReturnType<typeof setTimeout> | null = null
+
+  let rejectTimeout: ((err: Error) => void) | null = null
+
+  const resetStallTimer = () => {
+    if (stallTimer) clearTimeout(stallTimer)
+    stallTimer = setTimeout(() => {
+      controller.abort()
+      if (rejectTimeout) rejectTimeout(new NvidiaTimeoutError(timeoutMs))
+    }, timeoutMs)
+  }
 
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+    rejectTimeout = reject
+    resetStallTimer()
+    hardTimer = setTimeout(() => {
       controller.abort()
-      reject(new GeminiTimeoutError(timeoutMs))
-    }, timeoutMs)
+      reject(new NvidiaTimeoutError(NVIDIA_MAX_TOTAL_ATTEMPT_MS))
+    }, NVIDIA_MAX_TOTAL_ATTEMPT_MS)
   })
 
-  try {
-    const result = await Promise.race([
-      model.generateContent([{ text: promptText }], {
-        timeout: timeoutMs,
-        signal: controller.signal,
+  const requestPromise = (async () => {
+    const response = await fetch(NVIDIA_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream, application/json",
+      },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL_ID,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an expert software delivery consultant. Keep internal reasoning brief and output ONLY valid JSON matching the requested schema.",
+          },
+          { role: "user", content: promptText },
+        ],
+        temperature: 0.2,
+        top_p: 0.95,
+        max_tokens: NVIDIA_MAX_TOKENS,
+	chat_template_kwargs: {
+  		enable_thinking: false,
+  		thinking: false,
+	},        
+	stream: true,
       }),
-      timeoutPromise,
-    ])
-    return result.response.text()
+      signal: controller.signal,
+    })
+
+    resetStallTimer()
+
+    if (!response.ok) {
+      let detail = response.statusText || "Request failed"
+      try {
+        const errBody = await response.text()
+        if (errBody) {
+          try {
+            const parsed = JSON.parse(errBody)
+            detail =
+              parsed?.error?.message ||
+              parsed?.detail ||
+              parsed?.message ||
+              errBody.slice(0, 300)
+          } catch {
+            detail = errBody.slice(0, 300)
+          }
+        }
+      } catch {
+        // Ignore body read error on non-OK response
+      }
+      throw new NvidiaHttpError(response.status, response.statusText, detail)
+    }
+
+    const contentType = response.headers.get("content-type") || ""
+    if (!contentType.includes("text/event-stream") || !response.body) {
+      const data = await response.json()
+      const content = data?.choices?.[0]?.message?.content
+      if (typeof content !== "string" || !content.trim()) {
+        const finishReason = data?.choices?.[0]?.finish_reason ?? "unknown"
+        throw new Error(`NVIDIA NIM returned empty message content (finish_reason=${finishReason})`)
+      }
+      return content
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    let contentText = ""
+    let finishReason = "unknown"
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      resetStallTimer()
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split("\n")
+      buffer = lines.pop() ?? ""
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim()
+        if (!line.startsWith("data:")) continue
+        const payload = line.slice(5).trim()
+        if (!payload || payload === "[DONE]") continue
+        try {
+          const parsed = JSON.parse(payload)
+          const choice = parsed?.choices?.[0]
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason
+          }
+          const deltaContent = choice?.delta?.content
+          if (typeof deltaContent === "string") {
+            contentText += deltaContent
+          }
+        } catch {
+          // Ignore partial SSE line parse error
+        }
+      }
+    }
+
+    if (!contentText.trim()) {
+      throw new Error(`NVIDIA NIM stream completed with empty content (finish_reason=${finishReason})`)
+    }
+
+    return contentText
+  })()
+
+  try {
+    return await Promise.race([requestPromise, timeoutPromise])
   } finally {
-    if (timer) clearTimeout(timer)
+    if (stallTimer) clearTimeout(stallTimer)
+    if (hardTimer) clearTimeout(hardTimer)
   }
+}
+
+function extractCleanJson(responseText: string): string {
+  const stripped = responseText
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim()
+
+  const firstBrace = stripped.indexOf("{")
+  const lastBrace = stripped.lastIndexOf("}")
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return stripped.slice(firstBrace, lastBrace + 1)
+  }
+  return stripped
 }
 
 function sleep(ms: number): Promise<void> {
@@ -394,11 +538,12 @@ function sleep(ms: number): Promise<void> {
 
 export async function POST(request: Request) {
   // Step 1 — Verify API key (never log the key or its prefix)
-  console.log("[RFP] GEMINI_API_KEY configured:", !!process.env.GEMINI_API_KEY)
+  const nvidiaApiKey = process.env.NVIDIA_API_KEY?.trim()
+  console.log("[RFP] NVIDIA_API_KEY configured:", !!nvidiaApiKey)
 
-  if (!process.env.GEMINI_API_KEY) {
+  if (!nvidiaApiKey) {
     return Response.json(
-      { success: false, error: "Gemini API key not configured. Add GEMINI_API_KEY to .env.local" },
+      { success: false, error: "NVIDIA API key not configured. Add NVIDIA_API_KEY to .env.local" },
       { status: 500 }
     )
   }
@@ -507,7 +652,7 @@ export async function POST(request: Request) {
 
   console.log("[RFP] Extracted text length:", extractedText.length)
 
-  // Step 4 — Load current Component Library & Call Gemini
+  // Step 4 — Load current Component Library & Call NVIDIA NIM
   const truncated = extractedText.length > MAX_TEXT_LENGTH
   const truncatedText = extractedText.slice(0, MAX_TEXT_LENGTH)
 
@@ -524,40 +669,36 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { GoogleGenerativeAI } = await import("@google/generative-ai")
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string)
-    const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" })
     const promptText = buildPrompt(truncatedText, libraryItems)
-
     let responseText = ""
 
-    for (let attempt = 1; attempt <= GEMINI_MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= NVIDIA_MAX_ATTEMPTS; attempt++) {
       const attemptStart = Date.now()
       console.log(
-        `[RFP] Sending to Gemini (attempt ${attempt}/${GEMINI_MAX_ATTEMPTS}, timeout ${GEMINI_TIMEOUT_MS}ms), text length: ${truncatedText.length}, library items: ${libraryItems.length}`
+        `[RFP] Sending to NVIDIA NIM (${NVIDIA_MODEL_ID}, attempt ${attempt}/${NVIDIA_MAX_ATTEMPTS}, timeout ${NVIDIA_TIMEOUT_MS}ms), text length: ${truncatedText.length}, library items: ${libraryItems.length}`
       )
 
       try {
-        responseText = await generateWithTimeout(model, promptText, GEMINI_TIMEOUT_MS)
+        responseText = await callNvidiaWithTimeout(nvidiaApiKey, promptText, NVIDIA_TIMEOUT_MS)
         const elapsedMs = Date.now() - attemptStart
         console.log(
-          `[RFP] Gemini response received on attempt ${attempt}/${GEMINI_MAX_ATTEMPTS} in ${elapsedMs}ms, length: ${responseText.length}`
+          `[RFP] NVIDIA NIM response received on attempt ${attempt}/${NVIDIA_MAX_ATTEMPTS} in ${elapsedMs}ms, length: ${responseText.length}`
         )
-        console.log("[RFP] Gemini response preview:", responseText.slice(0, 200))
+        console.log("[RFP] NVIDIA NIM response preview:", responseText.slice(0, 200))
         break
       } catch (attemptErr) {
         const elapsedMs = Date.now() - attemptStart
-        const info = classifyGeminiError(attemptErr)
+        const info = classifyNvidiaError(attemptErr)
 
         console.error(
-          `[RFP] Gemini attempt ${attempt}/${GEMINI_MAX_ATTEMPTS} failed after ${elapsedMs}ms | category=${info.category} | status=${info.httpStatus ?? "N/A"} | transient=${info.isTransient} | message=${info.message}`
+          `[RFP] NVIDIA NIM attempt ${attempt}/${NVIDIA_MAX_ATTEMPTS} failed after ${elapsedMs}ms | category=${info.category} | status=${info.httpStatus ?? "N/A"} | transient=${info.isTransient} | message=${info.message}`
         )
 
-        if (info.isTransient && attempt < GEMINI_MAX_ATTEMPTS) {
+        if (info.isTransient && attempt < NVIDIA_MAX_ATTEMPTS) {
           console.warn(
-            `[RFP] Transient Gemini failure (${info.category}${info.httpStatus ? ` HTTP ${info.httpStatus}` : ""}); retrying in ${GEMINI_RETRY_BACKOFF_MS}ms...`
+            `[RFP] Transient NVIDIA NIM failure (${info.category}${info.httpStatus ? ` HTTP ${info.httpStatus}` : ""}); retrying in ${NVIDIA_RETRY_BACKOFF_MS}ms...`
           )
-          await sleep(GEMINI_RETRY_BACKOFF_MS)
+          await sleep(NVIDIA_RETRY_BACKOFF_MS)
           continue
         }
 
@@ -565,7 +706,7 @@ export async function POST(request: Request) {
           return Response.json(
             {
               success: false,
-              error: "Gemini is temporarily unavailable or busy. Please try again shortly.",
+              error: "AI service is temporarily unavailable or busy. Please try again shortly.",
             },
             { status: info.category === "TIMEOUT" ? 504 : info.httpStatus ?? 503 }
           )
@@ -581,12 +722,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Strip markdown fences if present
-    const cleanJson = responseText
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim()
+    const cleanJson = extractCleanJson(responseText)
 
     let analysis
     try {
@@ -594,7 +730,7 @@ export async function POST(request: Request) {
     } catch (parseErr) {
       const parseMsg = parseErr instanceof Error ? parseErr.message : String(parseErr)
       console.error(
-        `[RFP] Gemini failure | category=JSON_PARSE_ERROR | responseLength=${responseText.length} | message=${parseMsg}`
+        `[RFP] NVIDIA NIM failure | category=JSON_PARSE_ERROR | responseLength=${responseText.length} | message=${parseMsg}`
       )
       console.error("[RFP] Raw response preview:", responseText.slice(0, 500))
       return Response.json(
@@ -618,16 +754,16 @@ export async function POST(request: Request) {
       filename,
       fileSize,
     })
-  } catch (geminiErr) {
-    const info = classifyGeminiError(geminiErr)
+  } catch (nvidiaErr) {
+    const info = classifyNvidiaError(nvidiaErr)
     console.error(
-      `[RFP] Unexpected Gemini failure | category=${info.category} | status=${info.httpStatus ?? "N/A"} | message=${info.message}`
+      `[RFP] Unexpected NVIDIA NIM failure | category=${info.category} | status=${info.httpStatus ?? "N/A"} | message=${info.message}`
     )
     return Response.json(
       {
         success: false,
         error: info.isTransient
-          ? "Gemini is temporarily unavailable or busy. Please try again shortly."
+          ? "AI service is temporarily unavailable or busy. Please try again shortly."
           : "AI analysis failed: " + info.message,
       },
       { status: 500 }
