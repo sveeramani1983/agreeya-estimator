@@ -12,10 +12,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 
 import { OverheadConfig, CustomOverhead } from "@/lib/types"
 import { updateOverheadConfig } from "@/lib/actions"
+import { OverheadAIPanel } from "@/components/overhead-ai-panel"
+import { OverheadRecommendationData } from "@/app/api/projects/[id]/ai-recommend/route"
 
 interface OverheadWorkspaceProps {
   projectId: string
@@ -32,6 +35,7 @@ export function OverheadWorkspace({
 }: OverheadWorkspaceProps) {
   const [config, setConfig] = useState<OverheadConfig>(initialConfig)
   const [saving, setSaving] = useState(false)
+  const [aiAppliedKeys, setAiAppliedKeys] = useState<Set<string>>(new Set())
   const saveCount = useRef(0)
 
   // Cascading three-tier calculation
@@ -94,7 +98,51 @@ export function OverheadWorkspace({
     if (config !== initialConfig) debouncedSave(config)
   }, [config, debouncedSave, initialConfig])
 
-  const update = (updates: Partial<OverheadConfig>) => setConfig(prev => ({ ...prev, ...updates }))
+  const update = (updates: Partial<OverheadConfig>, touchedKey?: string) => {
+    if (touchedKey) {
+      setAiAppliedKeys(prev => {
+        if (!prev.has(touchedKey)) return prev
+        const next = new Set(prev)
+        next.delete(touchedKey)
+        return next
+      })
+    }
+    setConfig(prev => ({ ...prev, ...updates }))
+  }
+
+  const handleApplyAI = (recs: OverheadRecommendationData["recommendations"]) => {
+    setConfig(prev => ({
+      ...prev,
+      ba_enabled: recs.ba_enabled,
+      ba_percent: recs.ba_percent,
+      qa_enabled: recs.qa_enabled,
+      qa_percent: recs.qa_percent,
+      devops_enabled: recs.devops_enabled,
+      devops_percent: recs.devops_percent,
+      ux_enabled: recs.ux_enabled,
+      ux_percent: recs.ux_percent,
+
+      pm_enabled: recs.pm_enabled,
+      pm_percent: recs.pm_percent,
+      change_mgmt_enabled: recs.change_mgmt_enabled,
+      change_mgmt_percent: recs.change_mgmt_percent,
+      solutions_arch_enabled: recs.solutions_arch_enabled,
+      solutions_arch_percent: recs.solutions_arch_percent,
+      training_enabled: recs.training_enabled,
+      training_percent: recs.training_percent,
+      warranty_enabled: recs.warranty_enabled,
+      warranty_percent: recs.warranty_percent,
+      risk_buffer_enabled: recs.risk_buffer_enabled,
+      risk_buffer_percent: recs.risk_buffer_percent,
+
+      project_contingency_percent: recs.project_contingency_percent,
+    }))
+    setAiAppliedKeys(new Set([
+      "ba", "qa", "devops", "ux",
+      "pm", "change_mgmt", "solutions_arch", "training", "warranty", "risk_buffer",
+      "contingency"
+    ]))
+  }
 
   const addCustomOverhead = () => {
     const newItem: CustomOverhead = {
@@ -119,95 +167,107 @@ export function OverheadWorkspace({
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      {/* Left: Three-tier configuration */}
-      <div className="lg:col-span-2 space-y-8">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Layers className="h-5 w-5 text-sidebar" />
-            <h2 className="text-xl font-semibold">Three-Tier Overhead Model</h2>
-          </div>
-          <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-            {saving ? (
-              <><Save className="h-3 w-3 animate-pulse" /> Saving...</>
-            ) : (
-              <><CheckCircle2 className="h-3 w-3 text-green-500" /> Saved</>
-            )}
-          </div>
-        </div>
+    <div className="space-y-6">
+      {/* AI Overhead Assistant Panel */}
+      <OverheadAIPanel
+        projectId={projectId}
+        currentConfig={config}
+        constructionHours={constructionHours}
+        wbsConfidenceHours={wbsConfidenceHours}
+        onApplyRecommendations={handleApplyAI}
+      />
 
-        {/* LAYER 1 */}
-        <LayerSection
-          number={1}
-          title="Direct Effort"
-          color="blue"
-          baseLabel="WBS Estimate Base"
-          baseHours={constructionHours}
-          subtotalHours={calc.layer1Subtotal}
-          subtotalLabel="Layer 1 Subtotal"
-        >
-          <Table>
-            <TableHeader className="bg-blue-900/10">
-              <TableRow>
-                <TableHead>Category</TableHead>
-                <TableHead className="w-[130px]">% of Base</TableHead>
-                <TableHead className="w-[110px] text-right">Hours</TableHead>
-                <TableHead className="w-[70px] text-center">Include</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {calc.l1Rows.map(row => (
-                <OverheadRow
-                  key={row.key}
-                  label={row.label}
-                  percent={row.percent}
-                  enabled={row.enabled}
-                  hours={row.hours}
-                  onPercentChange={v => update({ [`${row.key}_percent`]: v } as any)}
-                  onEnabledChange={v => update({ [`${row.key}_enabled`]: v } as any)}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        </LayerSection>
-
-        {/* LAYER 2 */}
-        <LayerSection
-          number={2}
-          title="Management & Support"
-          color="purple"
-          baseLabel="Layer 1 Subtotal"
-          baseHours={calc.layer1Subtotal}
-          subtotalHours={calc.l2Sum}
-          subtotalLabel="Layer 2 Overhead"
-        >
-          <div className="px-4 pb-1 text-[11px] text-purple-300 bg-purple-900/10 py-2 border-b border-purple-900/30 font-medium">
-            Each row is calculated as % × Layer 1 Subtotal ({calc.layer1Subtotal.toFixed(1)} hrs)
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left: Three-tier configuration */}
+        <div className="lg:col-span-2 space-y-8">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Layers className="h-5 w-5 text-sidebar" />
+              <h2 className="text-xl font-semibold">Three-Tier Overhead Model</h2>
+            </div>
+            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              {saving ? (
+                <><Save className="h-3 w-3 animate-pulse" /> Saving...</>
+              ) : (
+                <><CheckCircle2 className="h-3 w-3 text-green-500" /> Saved</>
+              )}
+            </div>
           </div>
-          <Table>
-            <TableHeader className="bg-purple-900/10">
-              <TableRow>
-                <TableHead>Category</TableHead>
-                <TableHead className="w-[130px]">% of L1 Subtotal</TableHead>
-                <TableHead className="w-[110px] text-right">Hours</TableHead>
-                <TableHead className="w-[70px] text-center">Include</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {calc.l2Rows.map(row => (
-                <OverheadRow
-                  key={row.key}
-                  label={row.label}
-                  percent={row.percent}
-                  enabled={row.enabled}
-                  hours={row.hours}
-                  onPercentChange={v => update({ [`${row.key}_percent`]: v } as any)}
-                  onEnabledChange={v => update({ [`${row.key}_enabled`]: v } as any)}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        </LayerSection>
+
+          {/* LAYER 1 */}
+          <LayerSection
+            number={1}
+            title="Direct Effort"
+            color="blue"
+            baseLabel="WBS Estimate Base"
+            baseHours={constructionHours}
+            subtotalHours={calc.layer1Subtotal}
+            subtotalLabel="Layer 1 Subtotal"
+          >
+            <Table>
+              <TableHeader className="bg-blue-900/10">
+                <TableRow>
+                  <TableHead>Category</TableHead>
+                  <TableHead className="w-[130px]">% of Base</TableHead>
+                  <TableHead className="w-[110px] text-right">Hours</TableHead>
+                  <TableHead className="w-[70px] text-center">Include</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {calc.l1Rows.map(row => (
+                  <OverheadRow
+                    key={row.key}
+                    label={row.label}
+                    percent={row.percent}
+                    enabled={row.enabled}
+                    hours={row.hours}
+                    isAiApplied={aiAppliedKeys.has(row.key)}
+                    onPercentChange={v => update({ [`${row.key}_percent`]: v } as any, row.key)}
+                    onEnabledChange={v => update({ [`${row.key}_enabled`]: v } as any, row.key)}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </LayerSection>
+
+          {/* LAYER 2 */}
+          <LayerSection
+            number={2}
+            title="Management & Support"
+            color="purple"
+            baseLabel="Layer 1 Subtotal"
+            baseHours={calc.layer1Subtotal}
+            subtotalHours={calc.l2Sum}
+            subtotalLabel="Layer 2 Overhead"
+          >
+            <div className="px-4 pb-1 text-[11px] text-purple-300 bg-purple-900/10 py-2 border-b border-purple-900/30 font-medium">
+              Each row is calculated as % × Layer 1 Subtotal ({calc.layer1Subtotal.toFixed(1)} hrs)
+            </div>
+            <Table>
+              <TableHeader className="bg-purple-900/10">
+                <TableRow>
+                  <TableHead>Category</TableHead>
+                  <TableHead className="w-[130px]">% of L1 Subtotal</TableHead>
+                  <TableHead className="w-[110px] text-right">Hours</TableHead>
+                  <TableHead className="w-[70px] text-center">Include</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {calc.l2Rows.map(row => (
+                  <OverheadRow
+                    key={row.key}
+                    label={row.label}
+                    percent={row.percent}
+                    enabled={row.enabled}
+                    hours={row.hours}
+                    isAiApplied={aiAppliedKeys.has(row.key)}
+                    onPercentChange={v => update({ [`${row.key}_percent`]: v } as any, row.key)}
+                    onEnabledChange={v => update({ [`${row.key}_enabled`]: v } as any, row.key)}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </LayerSection>
 
         {/* LAYER 3 */}
         <LayerSection
@@ -372,14 +432,21 @@ export function OverheadWorkspace({
 
             <div className="bg-[#0D1526] border border-dashed border-[#1E2D45] rounded p-2 space-y-1">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>Project Contingency</span>
+                <div className="flex items-center gap-1.5">
+                  <span>Project Contingency</span>
+                  {aiAppliedKeys.has("contingency") && (
+                    <Badge variant="outline" className="text-[9px] py-0 px-1 border-blue-600/50 bg-blue-900/30 text-blue-300 font-normal">
+                      ✨ AI
+                    </Badge>
+                  )}
+                </div>
                 <div className="flex items-center gap-1.5">
                   <Input
                     type="number"
                     min="0"
                     max="100"
                     value={config.project_contingency_percent}
-                    onChange={e => update({ project_contingency_percent: Number(e.target.value) })}
+                    onChange={e => update({ project_contingency_percent: Number(e.target.value) }, "contingency")}
                     className="h-6 w-14 text-right px-1.5 text-xs"
                   />
                   <span>%</span>
@@ -453,6 +520,7 @@ export function OverheadWorkspace({
         </Card>
       </div>
     </div>
+    </div>
   )
 }
 
@@ -516,6 +584,7 @@ function OverheadRow({
   percent,
   enabled,
   hours,
+  isAiApplied,
   onPercentChange,
   onEnabledChange,
 }: {
@@ -523,13 +592,21 @@ function OverheadRow({
   percent: number
   enabled: boolean
   hours: number
+  isAiApplied?: boolean
   onPercentChange: (v: number) => void
   onEnabledChange: (v: boolean) => void
 }) {
   return (
     <TableRow className={enabled ? "" : "opacity-40 grayscale"}>
       <TableCell>
-        <span className="text-sm font-medium">{label}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{label}</span>
+          {isAiApplied && (
+            <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-blue-600/50 bg-blue-900/30 text-blue-300 font-normal">
+              ✨ AI
+            </Badge>
+          )}
+        </div>
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-1">
