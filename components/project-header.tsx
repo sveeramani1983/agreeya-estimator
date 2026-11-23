@@ -161,7 +161,7 @@ export function ProjectHeader({ projectId, initialName, initialClientName, statu
     setName(newName)
     if (typeof document !== "undefined") document.title = newName
     await updateProject(projectId, { name: newName })
-    toast.success("Project renamed")
+    toast.success("Estimate renamed")
     router.refresh()
   }
 
@@ -170,7 +170,7 @@ export function ProjectHeader({ projectId, initialName, initialClientName, statu
       <EditableField
         value={name}
         onSave={handleSaveName}
-        emptyError="Project name cannot be empty"
+        emptyError="Estimate title cannot be empty"
         maxLength={100}
         displayClassName="text-3xl sm:text-4xl font-black tracking-tight text-foreground truncate"
         inputClassName="w-full min-w-[8rem] bg-transparent text-3xl sm:text-4xl font-black tracking-tight text-foreground border-0 border-b-2 border-[#1E2D45] focus:border-primary outline-none leading-tight"

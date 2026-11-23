@@ -2,7 +2,9 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { toast } from "sonner"
+import { Rocket, ExternalLink, Settings2 } from "lucide-react"
 import {
   Select,
   SelectContent,
@@ -10,18 +12,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { OutcomeModal } from "@/components/outcome-modal"
+import { ConvertToProjectModal } from "@/components/convert-to-project-modal"
 import { updateProjectOutcome, updateProject, updateProjectPursuitData } from "@/lib/actions"
 import { Project, ProjectStatus, ProjectLifecycleStatus } from "@/lib/types"
 
@@ -41,8 +34,8 @@ const ESTIMATE_STATUS_LABELS: Record<ProjectStatus, string> = {
 const ESTIMATE_BADGE_CLASSES: Record<ProjectStatus, string> = {
   draft: "bg-gray-100 text-gray-700 border-gray-300",
   submitted: "bg-blue-100 text-blue-700 border-blue-300",
-  won: "bg-green-100 text-green-700 border-green-300",
-  lost: "bg-red-100 text-red-700 border-red-300",
+  won: "bg-emerald-900/40 text-emerald-300 border-emerald-700/60",
+  lost: "bg-red-900/40 text-red-300 border-red-700/60",
 }
 
 const LIFECYCLE_LABELS: Record<ProjectLifecycleStatus, string> = {
@@ -60,16 +53,10 @@ export function ProjectStatusControl({
   const router = useRouter()
   const currentStatus = project.status
 
-  const [pendingStatus, setPendingStatus] = useState<"won" | "lost" | null>(null)
-  const [modalOpen, setModalOpen] = useState(false)
+  const [pendingStatus, setPendingStatus] = useState<"lost" | null>(null)
+  const [lossModalOpen, setLossModalOpen] = useState(false)
+  const [convertModalOpen, setConvertModalOpen] = useState(false)
   const [isUpdating, setIsUpdating] = useState(false)
-
-  // Project dates dialog (shown after marking Won)
-  const [datesOpen, setDatesOpen] = useState(false)
-  const [startDate, setStartDate] = useState(project.project_start_date ?? "")
-  const [targetEndDate, setTargetEndDate] = useState(project.project_target_end_date ?? "")
-  const [savingDates, setSavingDates] = useState(false)
-
   const [savingLifecycle, setSavingLifecycle] = useState(false)
 
   // Win probability inline state
@@ -100,11 +87,16 @@ export function ProjectStatusControl({
 
   async function handleEstimateStatusChange(newStatus: string) {
     const status = newStatus as ProjectStatus
-    if (status === "won" || status === "lost") {
-      setPendingStatus(status)
-      setModalOpen(true)
+    if (status === "won") {
+      setConvertModalOpen(true)
       return
     }
+    if (status === "lost") {
+      setPendingStatus("lost")
+      setLossModalOpen(true)
+      return
+    }
+
     setIsUpdating(true)
     try {
       await updateProjectOutcome(projectId, status, null)
@@ -117,54 +109,14 @@ export function ProjectStatusControl({
     }
   }
 
-  function handleModalComplete() {
-    setModalOpen(false)
-    if (pendingStatus === "won") {
-      // Prompt for project dates
-      setDatesOpen(true)
-    } else {
-      setPendingStatus(null)
-      router.refresh()
-    }
-  }
-
-  function handleModalOpenChange(open: boolean) {
-    setModalOpen(open)
-    if (!open) setPendingStatus(null)
-  }
-
-  async function handleSaveDates() {
-    setSavingDates(true)
-    try {
-      await updateProject(projectId, {
-        project_start_date: startDate || null,
-        project_target_end_date: targetEndDate || null,
-      })
-      toast.success("Project dates saved.")
-    } catch {
-      toast.error("Failed to save project dates.")
-    } finally {
-      setSavingDates(false)
-      setDatesOpen(false)
-      setPendingStatus(null)
-      router.refresh()
-    }
-  }
-
-  function handleSkipDates() {
-    setDatesOpen(false)
-    setPendingStatus(null)
-    router.refresh()
-  }
-
   async function handleLifecycleChange(newStatus: ProjectLifecycleStatus) {
     setSavingLifecycle(true)
     try {
       await updateProject(projectId, { project_status: newStatus })
-      toast.success(`Project status updated to ${LIFECYCLE_LABELS[newStatus]}.`)
+      toast.success(`Delivery status updated to ${LIFECYCLE_LABELS[newStatus]}.`)
       router.refresh()
     } catch {
-      toast.error("Failed to update project status.")
+      toast.error("Failed to update delivery status.")
     } finally {
       setSavingLifecycle(false)
     }
@@ -215,81 +167,71 @@ export function ProjectStatusControl({
           </div>
         )}
 
-        {/* Project Lifecycle Status row — only visible when Won */}
+        {/* Project Lifecycle Status row — visible when Won */}
         {currentStatus === "won" && (
-          <div className="flex items-center gap-2 pt-1.5 border-t border-border/40">
-            <span className="text-xs text-muted-foreground whitespace-nowrap">Project:</span>
-            <Select
-              value={project.project_status ?? "not_started"}
-              onValueChange={(val) => { if (val) handleLifecycleChange(val as ProjectLifecycleStatus) }}
-              disabled={savingLifecycle}
+          <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border/40">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground whitespace-nowrap">Delivery:</span>
+              <Select
+                value={project.project_status ?? "not_started"}
+                onValueChange={(val) => { if (val) handleLifecycleChange(val as ProjectLifecycleStatus) }}
+                disabled={savingLifecycle}
+              >
+                <SelectTrigger className="w-32 h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="not_started">Not Started</SelectItem>
+                  <SelectItem value="in_progress">In Progress</SelectItem>
+                  <SelectItem value="on_hold">On Hold</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              asChild
+              className="h-7 px-2 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/20 gap-1 font-semibold"
             >
-              <SelectTrigger className="w-36 h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="not_started">Not Started</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="on_hold">On Hold</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-              </SelectContent>
-            </Select>
+              <Link href={`/tracker/projects/${projectId}/overview`}>
+                <Rocket className="h-3 w-3" />
+                Tracker
+              </Link>
+            </Button>
           </div>
         )}
       </div>
 
-      {/* Outcome modal (win/loss details) */}
-      {pendingStatus && (
+      {/* Structured Convert to Delivery Project Modal */}
+      <ConvertToProjectModal
+        open={convertModalOpen}
+        onOpenChange={setConvertModalOpen}
+        projectId={projectId}
+        projectName={project.name}
+        clientName={project.client_name}
+        currentQuotedPrice={currentQuotedPrice}
+        initialStartDate={project.project_start_date}
+        initialTargetEndDate={project.project_target_end_date}
+        onComplete={() => router.refresh()}
+      />
+
+      {/* Loss Outcome Modal */}
+      {pendingStatus === "lost" && (
         <OutcomeModal
-          open={modalOpen}
-          onOpenChange={handleModalOpenChange}
+          open={lossModalOpen}
+          onOpenChange={setLossModalOpen}
           projectId={projectId}
-          status={pendingStatus}
+          status="lost"
           currentQuotedPrice={currentQuotedPrice}
-          onComplete={handleModalComplete}
+          onComplete={() => {
+            setLossModalOpen(false)
+            setPendingStatus(null)
+            router.refresh()
+          }}
         />
       )}
-
-      {/* Project dates dialog — shown automatically after marking Won */}
-      <Dialog open={datesOpen} onOpenChange={(open) => { if (!open) handleSkipDates() }}>
-        <DialogContent showCloseButton={false} className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Set Project Dates</DialogTitle>
-            <DialogDescription>
-              Optionally set a start date and target end date. These are used to track delivery progress in the Project Health section.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid grid-cols-2 gap-4 py-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="proj-start">Start Date</Label>
-              <Input
-                id="proj-start"
-                type="date"
-                value={startDate}
-                onChange={e => setStartDate(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="proj-end">Target End Date</Label>
-              <Input
-                id="proj-end"
-                type="date"
-                value={targetEndDate}
-                min={startDate || undefined}
-                onChange={e => setTargetEndDate(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={handleSkipDates}>
-              Skip for now
-            </Button>
-            <Button size="sm" onClick={handleSaveDates} disabled={savingDates}>
-              {savingDates ? "Saving…" : "Save Dates"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

@@ -45,7 +45,7 @@ export default async function ProjectLayout({
         <Breadcrumb className="print:hidden">
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbLink render={<Link href="/projects">Projects</Link>} />
+              <BreadcrumbLink render={<Link href="/projects">Estimates</Link>} />
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>

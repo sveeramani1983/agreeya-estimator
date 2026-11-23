@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { PipelineDashboardSection } from "@/components/pipeline-dashboard-section"
+import { NewProjectModal } from "@/components/new-project-modal"
 
 export default async function EstimatorDashboardPage() {
   const [projects, stats, pipelineData] = await Promise.all([
@@ -18,17 +19,20 @@ export default async function EstimatorDashboardPage() {
   const recentProjects = projects.slice(0, 5)
 
   const kpis = [
-    { title: "Total Projects", value: stats.totalProjects, icon: Folder, color: "text-blue-600", desc: "Lifetime projects" },
-    { title: "Active Estimates", value: stats.activeEstimates, icon: Activity, color: "text-orange-600", desc: "Currently in draft" },
-    { title: "Won Projects", value: stats.wonProjects, icon: CheckCircle2, color: "text-green-600", desc: "Successfully closed" },
-    { title: "Estimated Value", value: `$${stats.totalValue.toLocaleString()}`, icon: DollarSign, color: "text-purple-600", desc: "Total quoted value" },
+    { title: "Total Estimates", value: stats.totalProjects, icon: Folder, color: "text-blue-600", desc: "Lifetime bids & estimates" },
+    { title: "In-Flight Estimates", value: stats.activeEstimates, icon: Activity, color: "text-orange-600", desc: "Currently in progress" },
+    { title: "Won Deals", value: stats.wonProjects, icon: CheckCircle2, color: "text-green-600", desc: "Successfully won & closed" },
+    { title: "Pipeline Value", value: `$${stats.totalValue.toLocaleString()}`, icon: DollarSign, color: "text-purple-600", desc: "Total quoted value" },
   ]
 
   return (
     <div className="space-y-10">
-      <div className="space-y-1">
-        <h2 className="text-3xl font-black tracking-tight text-foreground">Dashboard</h2>
-        <p className="text-muted-foreground text-lg">Welcome back. Here's what's happening with your estimates.</p>
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h2 className="text-3xl font-black tracking-tight text-foreground">Estimator Dashboard</h2>
+          <p className="text-muted-foreground text-lg">Welcome back. Here's what's happening with your estimates.</p>
+        </div>
+        <NewProjectModal />
       </div>
 
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -49,12 +53,12 @@ export default async function EstimatorDashboardPage() {
       </div>
 
       <div className="grid gap-8 lg:grid-cols-3">
-        {/* Recent Projects */}
+        {/* Recent Estimates */}
         <Card className="lg:col-span-2 shadow-sm border-[#1E2D45] bg-[#111827]">
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>Recent Projects</CardTitle>
-              <CardDescription>Your most recently updated estimates</CardDescription>
+              <CardTitle>Recent Estimates</CardTitle>
+              <CardDescription>Your most recently updated proposals</CardDescription>
             </div>
             <Button variant="ghost" size="sm" asChild>
               <Link href="/projects" className="gap-2">
@@ -89,8 +93,7 @@ export default async function EstimatorDashboardPage() {
               ) : (
                 <div className="h-40 flex flex-col items-center justify-center space-y-3 border-2 border-dashed rounded-xl">
                    <Clock className="h-8 w-8 text-muted-foreground opacity-20" />
-                   <p className="text-sm text-muted-foreground font-medium">No projects found</p>
-                   <Button size="sm" variant="outline">Create New Project</Button>
+                   <p className="text-sm text-muted-foreground font-medium">No estimates found</p>
                 </div>
               )}
             </div>

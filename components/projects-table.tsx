@@ -149,7 +149,7 @@ export function ProjectsTable({ initialProjects }: ProjectsTableProps) {
           <TableHeader>
             <TableRow>
               <TableHead className="cursor-pointer" onClick={() => handleSort('name')}>
-                Project Name <ArrowUpDown className="ml-2 h-4 w-4 inline-block" />
+                Estimate Title <ArrowUpDown className="ml-2 h-4 w-4 inline-block" />
               </TableHead>
               <TableHead className="cursor-pointer" onClick={() => handleSort('client_name')}>
                 Client <ArrowUpDown className="ml-2 h-4 w-4 inline-block" />
@@ -180,7 +180,7 @@ export function ProjectsTable({ initialProjects }: ProjectsTableProps) {
               filteredProjects.map((project) => {
                 const quotedPrice = project.total_cost ? Math.round(project.total_cost * (1 + (project.margin_percent ?? 0) / 100)) : 0;
                 return (
-                <TableRow key={project.id} className="cursor-pointer hover:bg-[#1E2D45]/50 transition-colors" onClick={() => router.push(`/projects/${project.id}/summary`)}>
+                <TableRow key={project.id} className="cursor-pointer hover:bg-[#1E2D45]/50 transition-colors" onClick={() => router.push(`/projects/${project.id}/review`)}>
                   <TableCell className="font-medium">{project.name}</TableCell>
                   <TableCell>
                     {project.client_id ? (
@@ -221,17 +221,17 @@ export function ProjectsTable({ initialProjects }: ProjectsTableProps) {
                             <Edit className="mr-2 h-4 w-4" /> Edit
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleViewSummary(project)}>
-                            <FileSearch className="mr-2 h-4 w-4" /> View Summary
+                            <FileSearch className="mr-2 h-4 w-4" /> View Review
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={async () => {
-                            const toastId = toast.loading("Duplicating project…")
+                            const toastId = toast.loading("Duplicating estimate…")
                             try {
                               const { id } = await duplicateProject(project.id)
                               toast.dismiss(toastId)
-                              toast.success("Project duplicated")
+                              toast.success("Estimate duplicated")
                               router.push(`/projects/${id}/estimate`)
                             } catch {
-                              toast.error("Failed to duplicate project", { id: toastId })
+                              toast.error("Failed to duplicate estimate", { id: toastId })
                             }
                           }}>
                             <Copy className="mr-2 h-4 w-4" /> Duplicate

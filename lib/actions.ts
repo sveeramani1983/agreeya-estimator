@@ -1067,11 +1067,45 @@ export async function duplicateProject(id: string) {
       }
     })();
 
-    revalidatePath("/projects");
+    try { revalidatePath("/projects"); } catch {}
     return { id: newId };
   } catch (error) {
     console.error("Failed to duplicate project:", error);
     throw error;
+  }
+}
+
+export async function createEstimateFromClone(data: {
+  sourceProjectId: string
+  name: string
+  clientName: string
+  clientId?: string | null
+  description?: string
+}) {
+  try {
+    const result = await duplicateProject(data.sourceProjectId)
+    const db = getDb()
+    db.prepare(`
+      UPDATE projects SET
+        name = ?,
+        client_name = ?,
+        client_id = ?,
+        description = COALESCE(?, description),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      data.name,
+      data.clientName,
+      data.clientId || null,
+      data.description || null,
+      result.id
+    )
+
+    try { revalidatePath("/projects"); } catch {}
+    return { id: result.id }
+  } catch (error) {
+    console.error("Failed to create estimate from clone:", error)
+    throw error
   }
 }
 
@@ -1163,7 +1197,9 @@ export async function createEstimateVersion(projectId: string, label: string, no
     db.prepare("INSERT INTO estimate_versions (id, project_id, version_number, version_label, snapshot, total_hours, total_cost, total_sp, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(id, projectId, versionNumber, label, snapshot, totalHoursResult.total, finalTotalCost, totalSPResult.total, notes);
 
-    revalidatePath(`/projects/${projectId}/versions`);
+    try {
+      revalidatePath(`/projects/${projectId}/versions`);
+    } catch {}
     return id;
   } catch (error) {
     console.error("Failed to create estimate version:", error);
@@ -1391,14 +1427,87 @@ export async function updateProjectOutcome(projectId: string, status: ProjectSta
             .run(tp.id, projectId);
         }
       } catch {}
-      revalidatePath("/tracker");
-      revalidatePath("/tracker/projects");
+      try {
+        revalidatePath("/tracker");
+        revalidatePath("/tracker/projects");
+      } catch {}
     }
-    revalidatePath("/projects");
-    revalidatePath(`/projects/${projectId}`);
-    revalidatePath("/analytics");
+    try {
+      revalidatePath("/projects");
+      revalidatePath(`/projects/${projectId}`);
+      revalidatePath("/analytics");
+    } catch {}
   } catch (error) {
     console.error("Failed to update project outcome:", error);
+    throw error;
+  }
+}
+
+export async function convertWonEstimateToDeliveryProject(
+  projectId: string,
+  data: {
+    finalContractValue: number | null
+    decisionDate: string | null
+    winFactors: string[]
+    startDate: string | null
+    targetEndDate: string | null
+    reportingCadence?: 'weekly' | 'bi-weekly' | 'monthly'
+    pmName?: string
+    pmEmail?: string
+    notes?: string
+  }
+) {
+  try {
+    const db = getDb();
+
+    // 1. Mark as won and build baseline snapshot
+    await updateProjectOutcome(projectId, 'won', {
+      finalQuotedPrice: data.finalContractValue,
+      actualContractValue: data.finalContractValue,
+      decisionDate: data.decisionDate,
+      winFactors: data.winFactors,
+      notes: data.notes || null,
+    });
+
+    // 2. Update projects table with delivery dates & status
+    db.prepare(`
+      UPDATE projects SET
+        project_status = 'not_started',
+        project_start_date = ?,
+        project_target_end_date = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(data.startDate || null, data.targetEndDate || null, projectId);
+
+    // 3. Update tracker_projects with reporting cadence & PM contact info
+    const tp = db.prepare("SELECT id FROM tracker_projects WHERE project_id = ?").get(projectId) as { id: string } | undefined;
+    if (tp) {
+      const pmNotes = JSON.stringify({
+        pmName: data.pmName || null,
+        pmEmail: data.pmEmail || null,
+        notes: data.notes || null,
+      });
+      db.prepare(`
+        UPDATE tracker_projects SET
+          reporting_cadence = COALESCE(?, reporting_cadence),
+          notes = ?
+        WHERE id = ?
+      `).run(data.reportingCadence || 'weekly', pmNotes, tp.id);
+    }
+
+    try {
+      revalidatePath(`/projects/${projectId}`);
+      revalidatePath(`/tracker/projects/${projectId}/overview`);
+      revalidatePath("/tracker");
+      revalidatePath("/tracker/projects");
+    } catch {}
+
+    return {
+      success: true,
+      trackerUrl: `/tracker/projects/${projectId}/overview`,
+    };
+  } catch (error) {
+    console.error("Failed to convert won estimate to delivery project:", error);
     throw error;
   }
 }
@@ -1451,6 +1560,24 @@ export async function getRfpAnalyses(): Promise<Array<{
     ).all() as any[]
   } catch {
     return []
+  }
+}
+
+export async function getRfpAnalysisForProject(projectId: string): Promise<{
+  id: string
+  filename: string | null
+  file_size: number | null
+  created_at: string
+  analysis_json: string
+} | null> {
+  try {
+    const db = getDb()
+    const record = db.prepare(
+      "SELECT id, filename, file_size, created_at, analysis_json FROM rfp_analyses WHERE project_id = ? ORDER BY created_at DESC LIMIT 1"
+    ).get(projectId) as any
+    return record || null
+  } catch {
+    return null
   }
 }
 
@@ -1542,6 +1669,176 @@ export async function importWBSFromRFP(
     return { imported: components.length }
   } catch (error) {
     console.error("Failed to import WBS from RFP:", error)
+    throw error
+  }
+}
+
+export async function acceptScopeAndPopulateEstimate(
+  projectId: string,
+  components: SuggestedWBSComponent[],
+  redFlags?: Array<{
+    severity: "high" | "medium" | "low"
+    title: string
+    description: string
+    recommendation: string
+  }>,
+  clientQuestions?: Array<{
+    category: string
+    question: string
+    importance: "critical" | "important" | "nice-to-know"
+  }>
+) {
+  try {
+    const db = getDb()
+
+    const insertWbs = db.prepare(`
+      INSERT INTO wbs_components (
+        id, project_id, category, component_name,
+        description, complexity, story_points,
+        base_hours, confidence_level, notes, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    const findLibById = db.prepare(
+      "SELECT id, category, component_name, description, complexity, story_points, base_hours FROM component_library WHERE id = ?"
+    )
+    const findLibByName = db.prepare(
+      "SELECT id, category, component_name, description, complexity, story_points, base_hours FROM component_library WHERE LOWER(TRIM(component_name)) = LOWER(TRIM(?)) LIMIT 1"
+    )
+    const incrementLibUsage = db.prepare(
+      "UPDATE component_library SET times_used = COALESCE(times_used, 0) + 1 WHERE id = ?"
+    )
+
+    const maxWbsOrder = db.prepare(
+      "SELECT COALESCE(MAX(sort_order), 0) as max FROM wbs_components WHERE project_id = ?"
+    ).get(projectId) as { max: number }
+
+    const insertAssumption = db.prepare(`
+      INSERT INTO assumptions (
+        id, project_id, type, title, description, category,
+        likelihood, impact, risk_score, mitigation, owner, status, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    const maxRiskOrder = db.prepare(
+      "SELECT COALESCE(MAX(sort_order), 0) as max FROM assumptions WHERE project_id = ?"
+    ).get(projectId) as { max: number }
+
+    db.transaction(() => {
+      // 1. Insert components
+      components.forEach((comp, index) => {
+        const matchedLib = (
+          (comp.libraryComponentId ? findLibById.get(comp.libraryComponentId) : undefined) ??
+          (comp.source === "library" && comp.componentName ? findLibByName.get(comp.componentName) : undefined)
+        ) as
+          | {
+              id: string
+              category: string
+              component_name: string
+              description: string | null
+              complexity: string
+              story_points: number
+              base_hours: number
+            }
+          | undefined
+
+        const rawComplexity = (matchedLib ? matchedLib.complexity : comp.complexity || "medium").replace("-", "_")
+        const validComplexities = new Set(["simple", "medium", "complex", "very_complex", "spike"])
+        const complexity = validComplexities.has(rawComplexity) ? rawComplexity : "medium"
+
+        const rawCategory = matchedLib ? matchedLib.category : comp.category === "Data" ? "Data/Analytics" : comp.category || "Other"
+        const componentName = matchedLib ? matchedLib.component_name : comp.componentName
+        const description = matchedLib ? (matchedLib.description || comp.description || "") : comp.description
+        const storyPoints = matchedLib ? matchedLib.story_points : comp.storyPoints
+        const baseHours = matchedLib ? matchedLib.base_hours : comp.baseHours
+
+        const validConfidences = new Set(["high", "medium", "low", "spike"])
+        const confidence =
+          complexity === "spike"
+            ? "spike"
+            : validConfidences.has(comp.confidence)
+            ? comp.confidence
+            : "medium"
+
+        insertWbs.run(
+          uuidv4(),
+          projectId,
+          rawCategory,
+          componentName,
+          description,
+          complexity,
+          storyPoints,
+          baseHours,
+          confidence,
+          comp.rationale || null,
+          maxWbsOrder.max + index + 1
+        )
+
+        if (matchedLib) {
+          incrementLibUsage.run(matchedLib.id)
+        }
+      })
+
+      // 2. Insert Red Flags as Risks
+      if (redFlags && redFlags.length > 0) {
+        redFlags.forEach((flag, index) => {
+          const sev = flag.severity || "medium"
+          const likelihood = sev === "high" ? "high" : sev === "low" ? "low" : "medium"
+          const impact = sev === "high" ? "high" : sev === "low" ? "low" : "medium"
+          const score = sev === "high" ? 9 : sev === "low" ? 3 : 6
+
+          insertAssumption.run(
+            uuidv4(),
+            projectId,
+            "risk",
+            flag.title,
+            flag.description,
+            "Scope & Requirements",
+            likelihood,
+            impact,
+            score,
+            flag.recommendation || null,
+            "Presales Lead",
+            "open",
+            maxRiskOrder.max + index + 1
+          )
+        })
+      }
+
+      // 3. Insert Client Questions as Clarifications / Assumptions
+      if (clientQuestions && clientQuestions.length > 0) {
+        clientQuestions.forEach((q, index) => {
+          insertAssumption.run(
+            uuidv4(),
+            projectId,
+            "assumption",
+            `[Clarification] ${q.question.slice(0, 80)}`,
+            q.question,
+            q.category || "Client Scope Clarification",
+            "medium",
+            q.importance === "critical" ? "high" : "medium",
+            q.importance === "critical" ? 6 : 4,
+            "Clarify with client during presales discovery",
+            "Presales Lead",
+            "open",
+            maxRiskOrder.max + (redFlags?.length || 0) + index + 1
+          )
+        })
+      }
+    })()
+
+    try {
+      revalidatePath(`/projects/${projectId}/estimate`)
+      revalidatePath(`/projects/${projectId}/risks`)
+      revalidatePath(`/projects/${projectId}/scope`)
+    } catch {}
+    return {
+      importedComponents: components.length,
+      importedRisks: redFlags?.length || 0,
+      importedQuestions: clientQuestions?.length || 0,
+    }
+  } catch (error) {
+    console.error("Failed to accept scope and populate estimate:", error)
     throw error
   }
 }

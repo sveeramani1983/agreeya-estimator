@@ -42,14 +42,14 @@ const navMain = [
     icon: Home,
   },
   {
+    title: "Estimates",
+    url: "/projects",
+    icon: Folder,
+  },
+  {
     title: "Pipeline",
     url: "/pipeline",
     icon: Target,
-  },
-  {
-    title: "Projects",
-    url: "/projects",
-    icon: Folder,
   },
   {
     title: "Clients",
@@ -80,34 +80,9 @@ const navMain = [
 
 const navIntelligence = [
   {
-    title: "RFP Analyzer",
+    title: "Scope & RFP Analyzer",
     url: "/intelligence/rfp-analyzer",
     icon: FileSearch,
-  },
-  {
-    title: "Bid Scorecard",
-    url: "/intelligence/bid-scorecard",
-    icon: Award,
-  },
-  {
-    title: "Proposal Writer",
-    url: "/intelligence/proposal-writer",
-    icon: PenLine,
-  },
-  {
-    title: "AI Analytics",
-    url: "/intelligence/analytics",
-    icon: TrendingUp,
-  },
-  {
-    title: "Delivery Tracker",
-    url: "/intelligence/delivery-tracker",
-    icon: Activity,
-  },
-  {
-    title: "Delivery Options",
-    url: "/intelligence/delivery-options",
-    icon: GitBranch,
   },
 ]
 

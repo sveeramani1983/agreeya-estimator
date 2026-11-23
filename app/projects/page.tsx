@@ -13,25 +13,25 @@ export default async function ProjectsPage() {
 
   const kpis = [
     { 
-      title: "Total Projects", 
+      title: "Total Estimates", 
       value: stats.totalProjects, 
       icon: Folder, 
       color: "text-blue-600" 
     },
     { 
-      title: "Active Estimates", 
+      title: "In-Flight Estimates", 
       value: stats.activeEstimates, 
       icon: Activity, 
       color: "text-orange-600" 
     },
     { 
-      title: "Won Projects", 
+      title: "Won Deals", 
       value: stats.wonProjects, 
       icon: CheckCircle2, 
       color: "text-green-600" 
     },
     { 
-      title: "Total Estimated Value", 
+      title: "Pipeline Value", 
       value: `$${stats.totalValue.toLocaleString()}`, 
       icon: DollarSign, 
       color: "text-purple-600" 
@@ -42,8 +42,8 @@ export default async function ProjectsPage() {
     <div className="space-y-8">
       <div className="flex items-center justify-between">
         <div className="space-y-1">
-          <h2 className="text-3xl font-black tracking-tight text-foreground">Projects</h2>
-          <p className="text-muted-foreground">Manage your portfolio of estimates and proposals.</p>
+          <h2 className="text-3xl font-black tracking-tight text-foreground">Estimates</h2>
+          <p className="text-muted-foreground">Manage your portfolio of estimates, bids, and proposals.</p>
         </div>
         <NewProjectModal />
       </div>
@@ -73,9 +73,9 @@ export default async function ProjectsPage() {
               <Folder className="h-10 w-10 text-[#94A3B8]" />
             </div>
             <div className="space-y-2">
-              <h3 className="text-xl font-bold text-foreground">No projects found</h3>
+              <h3 className="text-xl font-bold text-foreground">No estimates found</h3>
               <p className="text-[#94A3B8] max-w-sm mx-auto">
-                You haven't created any estimation projects yet. Click the button below to start your first proposal.
+                You haven't created any estimates yet. Click the button below to start your first proposal.
               </p>
             </div>
             <NewProjectModal />

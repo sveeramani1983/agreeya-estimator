@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Calculator, Users, Settings, DollarSign, FileText, History, ShieldAlert, Calendar } from "lucide-react"
+import { FileSearch, Calculator, Users, Settings, DollarSign, FileText, History, ShieldAlert, Calendar } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface ProjectTabsProps {
@@ -16,20 +16,21 @@ export function ProjectTabs({ projectId, riskCount }: ProjectTabsProps) {
   const currentTab = segments[segments.length - 1] || "estimate"
 
   const tabs = [
+    { value: "scope",       label: "Scope",       Icon: FileSearch                   },
     { value: "estimate",    label: "Estimate",    Icon: Calculator                   },
     { value: "overhead",    label: "Overhead",    Icon: Settings                     },
     { value: "resources",   label: "Resources",   Icon: Users                        },
     { value: "commercials", label: "Commercials", Icon: DollarSign                   },
     { value: "schedule",    label: "Schedule",    Icon: Calendar                     },
     { value: "risks",       label: "Risks",       Icon: ShieldAlert, badge: riskCount },
-    { value: "summary",     label: "Summary",     Icon: FileText                     },
+    { value: "review",      label: "Review",      Icon: FileText                     },
     { value: "versions",    label: "Versions",    Icon: History                      },
   ]
 
   return (
     <nav className="flex items-end gap-0.5 print:hidden" aria-label="Project navigation">
       {tabs.map(({ value, label, Icon, badge }) => {
-        const isActive = currentTab === value
+        const isActive = currentTab === value || (value === "review" && currentTab === "summary")
         return (
           <Link
             key={value}
