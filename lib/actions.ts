@@ -1274,8 +1274,10 @@ export interface SuggestedWBSComponent {
   complexity: 'simple' | 'medium' | 'complex' | 'very_complex' | 'spike'
   storyPoints: number
   baseHours: number
-  confidence: 'high' | 'medium' | 'low'
+  confidence: 'high' | 'medium' | 'low' | 'spike'
   rationale: string
+  source?: 'library' | 'custom'
+  libraryComponentId?: string | null
 }
 
 export async function saveRfpAnalysis(data: {
@@ -1329,25 +1331,72 @@ export async function importWBSFromRFP(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
+    const findLibById = db.prepare(
+      "SELECT id, category, component_name, description, complexity, story_points, base_hours FROM component_library WHERE id = ?"
+    )
+    const findLibByName = db.prepare(
+      "SELECT id, category, component_name, description, complexity, story_points, base_hours FROM component_library WHERE LOWER(TRIM(component_name)) = LOWER(TRIM(?)) LIMIT 1"
+    )
+    const incrementLibUsage = db.prepare(
+      "UPDATE component_library SET times_used = COALESCE(times_used, 0) + 1 WHERE id = ?"
+    )
+
     const maxOrder = db.prepare(
       "SELECT COALESCE(MAX(sort_order), 0) as max FROM wbs_components WHERE project_id = ?"
     ).get(projectId) as { max: number }
 
     db.transaction(() => {
       components.forEach((comp, index) => {
+        const matchedLib = (
+          (comp.libraryComponentId ? findLibById.get(comp.libraryComponentId) : undefined) ??
+          (comp.source === "library" && comp.componentName ? findLibByName.get(comp.componentName) : undefined)
+        ) as
+          | {
+              id: string
+              category: string
+              component_name: string
+              description: string | null
+              complexity: string
+              story_points: number
+              base_hours: number
+            }
+          | undefined
+
+        const rawComplexity = (matchedLib ? matchedLib.complexity : comp.complexity || "medium").replace("-", "_")
+        const validComplexities = new Set(["simple", "medium", "complex", "very_complex", "spike"])
+        const complexity = validComplexities.has(rawComplexity) ? rawComplexity : "medium"
+
+        const rawCategory = matchedLib ? matchedLib.category : comp.category === "Data" ? "Data/Analytics" : comp.category || "Other"
+        const componentName = matchedLib ? matchedLib.component_name : comp.componentName
+        const description = matchedLib ? (matchedLib.description || comp.description || "") : comp.description
+        const storyPoints = matchedLib ? matchedLib.story_points : comp.storyPoints
+        const baseHours = matchedLib ? matchedLib.base_hours : comp.baseHours
+
+        const validConfidences = new Set(["high", "medium", "low", "spike"])
+        const confidence =
+          complexity === "spike"
+            ? "spike"
+            : validConfidences.has(comp.confidence)
+            ? comp.confidence
+            : "medium"
+
         insert.run(
           uuidv4(),
           projectId,
-          comp.category,
-          comp.componentName,
-          comp.description,
-          comp.complexity,
-          comp.storyPoints,
-          comp.baseHours,
-          comp.confidence,
+          rawCategory,
+          componentName,
+          description,
+          complexity,
+          storyPoints,
+          baseHours,
+          confidence,
           comp.rationale,
           maxOrder.max + index + 1
         )
+
+        if (matchedLib) {
+          incrementLibUsage.run(matchedLib.id)
+        }
       })
     })()
 

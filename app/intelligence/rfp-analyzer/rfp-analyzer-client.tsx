@@ -498,6 +498,9 @@ function WBSTab({
   const [importing, setImporting] = useState(false)
 
   const allSelected = selected.size === wbs.length
+  const libraryMatchedCount = wbs.filter((c) => c.source === "library" || !!c.libraryComponentId).length
+  const customCount = wbs.length - libraryMatchedCount
+
   const toggleAll = () =>
     setSelected(allSelected ? new Set() : new Set(wbs.map((_, i) => i)))
   const toggleItem = (i: number) =>
@@ -530,13 +533,23 @@ function WBSTab({
         Based on the RFP analysis, here are the suggested WBS components. Review and import the ones that apply to your estimate.
       </p>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button variant="outline" size="sm" onClick={toggleAll} className="h-8 text-xs border-[#1E2D45] bg-[#111827]">
           {allSelected ? "Deselect All" : "Select All"}
         </Button>
         <span className="text-xs text-muted-foreground">
           {selected.size} of {wbs.length} selected
         </span>
+        {wbs.length > 0 && (
+          <div className="ml-auto flex items-center gap-2 text-xs">
+            <span className="inline-flex items-center rounded-full border border-emerald-800/50 bg-emerald-900/20 px-2.5 py-0.5 font-medium text-emerald-300">
+              {libraryMatchedCount} Library Match{libraryMatchedCount !== 1 ? "es" : ""}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-purple-800/50 bg-purple-900/20 px-2.5 py-0.5 font-medium text-purple-300">
+              {customCount} AI Custom
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="overflow-hidden rounded-md border border-[#1E2D45] bg-[#111827]">
@@ -544,6 +557,7 @@ function WBSTab({
           <TableHeader className="bg-[#0D1526]">
             <TableRow>
               <TableHead className="w-8" />
+              <TableHead className="text-xs text-[#94A3B8] uppercase tracking-wider w-28">Source</TableHead>
               <TableHead className="text-xs text-[#94A3B8] uppercase tracking-wider">Category</TableHead>
               <TableHead className="text-xs text-[#94A3B8] uppercase tracking-wider">Component</TableHead>
               <TableHead className="text-xs text-[#94A3B8] uppercase tracking-wider w-28">Complexity</TableHead>
@@ -554,41 +568,55 @@ function WBSTab({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {wbs.map((comp, i) => (
-              <TableRow
-                key={i}
-                className={`cursor-pointer ${selected.has(i) ? "bg-blue-900/5" : "opacity-50"} hover:bg-[#1E2D45]/20`}
-                onClick={() => toggleItem(i)}
-              >
-                <TableCell>
-                  <div className={`h-4 w-4 rounded border ${selected.has(i) ? "bg-blue-600 border-blue-600" : "border-[#2D3F5A]"} flex items-center justify-center`}>
-                    {selected.has(i) && <CheckCircle2 className="h-3 w-3 text-white" />}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="secondary" className="bg-[#1E2D45] text-[#94A3B8] border-[#2D3F5A] text-xs">
-                    {comp.category}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <p className="text-sm font-medium text-foreground">{comp.componentName}</p>
-                  <p className="text-xs text-muted-foreground line-clamp-1">{comp.description}</p>
-                </TableCell>
-                <TableCell>
-                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${complexityBadge(comp.complexity)}`}>
-                    {comp.complexity.replace("_", " ")}
-                  </span>
-                </TableCell>
-                <TableCell className="text-right font-mono text-sm tabular-nums text-foreground">{comp.storyPoints}</TableCell>
-                <TableCell className="text-right font-mono text-sm tabular-nums text-foreground">{comp.baseHours}</TableCell>
-                <TableCell>
-                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${confidenceBadge(comp.confidence)}`}>
-                    {comp.confidence}
-                  </span>
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground max-w-[180px] truncate">{comp.rationale}</TableCell>
-              </TableRow>
-            ))}
+            {wbs.map((comp, i) => {
+              const isLibraryMatch = comp.source === "library" || !!comp.libraryComponentId
+              return (
+                <TableRow
+                  key={i}
+                  className={`cursor-pointer ${selected.has(i) ? "bg-blue-900/5" : "opacity-50"} hover:bg-[#1E2D45]/20`}
+                  onClick={() => toggleItem(i)}
+                >
+                  <TableCell>
+                    <div className={`h-4 w-4 rounded border ${selected.has(i) ? "bg-blue-600 border-blue-600" : "border-[#2D3F5A]"} flex items-center justify-center`}>
+                      {selected.has(i) && <CheckCircle2 className="h-3 w-3 text-white" />}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {isLibraryMatch ? (
+                      <span className="inline-flex items-center rounded-full border border-emerald-800/50 bg-emerald-900/30 px-2 py-0.5 text-xs font-medium text-emerald-300">
+                        Library Match
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center rounded-full border border-purple-800/50 bg-purple-900/30 px-2 py-0.5 text-xs font-medium text-purple-300">
+                        AI Custom
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary" className="bg-[#1E2D45] text-[#94A3B8] border-[#2D3F5A] text-xs">
+                      {comp.category}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <p className="text-sm font-medium text-foreground">{comp.componentName}</p>
+                    <p className="text-xs text-muted-foreground line-clamp-1">{comp.description}</p>
+                  </TableCell>
+                  <TableCell>
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${complexityBadge(comp.complexity)}`}>
+                      {(comp.complexity || "medium").replace(/[_-]/g, " ")}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-sm tabular-nums text-foreground">{comp.storyPoints}</TableCell>
+                  <TableCell className="text-right font-mono text-sm tabular-nums text-foreground">{comp.baseHours}</TableCell>
+                  <TableCell>
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${confidenceBadge(comp.confidence)}`}>
+                      {comp.confidence}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground max-w-[180px] truncate">{comp.rationale}</TableCell>
+                </TableRow>
+              )
+            })}
           </TableBody>
         </Table>
       </div>
